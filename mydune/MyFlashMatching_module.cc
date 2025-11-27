@@ -38,11 +38,12 @@
 #include <iostream>
 
 #include "mydune/utils/my_utils.hh"
+#include "mydune/utils/MyMatch.hh"
 
-class GetPandoraSliceAnalyser : public art::EDAnalyzer
+class MyFlashMatching : public art::EDAnalyzer
  {
     public:
-        explicit GetPandoraSliceAnalyser(fhicl::ParameterSet const& p);
+        explicit MyFlashMatching(fhicl::ParameterSet const& p);
 
         void beginJob() override;
         void analyze(art::Event const& e) override;
@@ -80,13 +81,14 @@ class GetPandoraSliceAnalyser : public art::EDAnalyzer
         double electronlife;
         double W_LAr;
 
+        int nOPdet;
 
         std::vector<QCluster> getQClusters(art::Event const& e);
-        void getFlashs(art::Event const& e);
+        std::vector<QFlash> getFlashs(art::Event const& e);
 };
 
 
-GetPandoraSliceAnalyser::GetPandoraSliceAnalyser(fhicl::ParameterSet const& p)
+MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
   : EDAnalyzer{p}
 {
     //seta os labels para ler os produtos
@@ -107,9 +109,11 @@ GetPandoraSliceAnalyser::GetPandoraSliceAnalyser(fhicl::ParameterSet const& p)
     //geometria do detector
     int nTPCs = geo->TotalNTPC();
     int nCrio = geo->Ncryostats();
+    nOPdet=geo->NOpDets();
    
     std::cout << "nCryo: " << nCrio << std::endl;
     std::cout << "nTPCs: " << nTPCs << std::endl;
+    std::cout << "nARAPUCAs: " << nOPdet << std::endl;
 
     geo::TPCID id(0,1);
     auto const& tpc = geo->TPC(id);
@@ -119,7 +123,7 @@ GetPandoraSliceAnalyser::GetPandoraSliceAnalyser(fhicl::ParameterSet const& p)
 
 }
 
-void GetPandoraSliceAnalyser::beginJob()
+void MyFlashMatching::beginJob()
 {
     /* art::ServiceHandle<art::TFileService> fs;
 
@@ -141,7 +145,7 @@ void GetPandoraSliceAnalyser::beginJob()
 
 }
 
-void GetPandoraSliceAnalyser::analyze(art::Event const& e)
+void MyFlashMatching::analyze(art::Event const& e)
 {
     run    = e.id().run();
     event  = e.id().event();
@@ -158,14 +162,14 @@ void GetPandoraSliceAnalyser::analyze(art::Event const& e)
     std::cout << "electron lifetime:=  " << electronlife << std::endl;
     std::cout << "W LAr:=  " << W_LAr << std::endl;
 
-    auto QLigths = getQClusters(e);
-    getFlashs(e);
+    auto QClusters = getQClusters(e);
+    auto QFlashs = getFlashs(e);
     
-    std::cout << "Slice ID := " << QLigths[0].sliceID << std::endl; // para o compilador nao reclamar que nao esta sendo usado
+    //std::cout << "Slice ID := " << QClusters[0].sliceID << std::endl; // para o compilador nao reclamar que nao esta sendo usado
 }
 
 
-std::vector<QCluster> GetPandoraSliceAnalyser::getQClusters(art::Event const& e)
+std::vector<QCluster> MyFlashMatching::getQClusters(art::Event const& e)
 {
    
 
@@ -346,10 +350,11 @@ std::vector<QCluster> GetPandoraSliceAnalyser::getQClusters(art::Event const& e)
     return QLigths;
 }
 
-void GetPandoraSliceAnalyser::getFlashs(art::Event const& e)
+std::vector<QFlash> MyFlashMatching::getFlashs(art::Event const& e)
 {
     //aqui vamos pegar os flashs
     std::vector<art::Ptr<recob::OpFlash> > flashlist;
+
     auto FlashHandle = e.getHandle< std::vector< recob::OpFlash >> (fFlashLabel);
     if (FlashHandle) 
     {
@@ -358,15 +363,45 @@ void GetPandoraSliceAnalyser::getFlashs(art::Event const& e)
     }
     else 
     {
-      mf::LogWarning("GetFlashMatchingMC") << "Cannot load any flashes. Failing";
-      return;
+      mf::LogWarning("MyFlashMatching") << "Cannot load any flashes. Failing";
+      return {};
     }
+    art::FindManyP<recob::OpHit> OpHits_from_Flashs(FlashHandle, e, fFlashLabel);
+
     //numero de flashs
     int number_flashs = flashlist.size();
     std::cout << "N flashs " << number_flashs << std::endl;
+
+    std::vector<QFlash> QFlashs;
+    //varrer os flashs
+    for(int i=0;i<number_flashs;i++)
+    {
+        QFlash this_qflash;
+        auto const& flash = flashlist[i];
+        auto hits = OpHits_from_Flashs.at(flash.key());
+        int number_hits=hits.size();
+        this_qflash.flashID=flash.key();
+        this_qflash.PE_CH.resize(this->nOPdet);
+        for(int j=0;j<number_hits;j++)
+        {
+            int this_ch=hits[j]->OpChannel();
+            this_qflash.PE_CH[this_ch]=hits[j]->PE();
+        }
+
+        this_qflash.y = flash->YCenter();
+        this_qflash.z = flash->ZCenter();
+        this_qflash.y_err = flash->YWidth();
+        this_qflash.z_err = flash->ZWidth();
+        this_qflash.time = flash->Time(); 
+        this_qflash.time_err = flash->TimeWidth(); 
+        QFlashs.push_back(this_qflash);
+
+    }
+    
+    return QFlashs;
 }
 
 
 
 
-DEFINE_ART_MODULE(GetPandoraSliceAnalyser)
+DEFINE_ART_MODULE(MyFlashMatching)

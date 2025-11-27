@@ -108,7 +108,7 @@ cet_build_plugin(GetPandoraTracksAnalyzer art::module
 
 add_subdirectory(utils)
 
-cet_build_plugin(GetPandoraSliceAnalyser art::module
+cet_build_plugin(MyFlashMatching art::module
   LIBRARIES
     larcorealg::Geometry
     lardataobj::RawData

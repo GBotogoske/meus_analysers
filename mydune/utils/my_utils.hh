@@ -21,24 +21,36 @@ class QPoint
 
 class QCluster : public std::vector<QPoint>
 {
-public:
-    int sliceID = -1;
+    public:
+        int sliceID = -1;
 
-    QCluster() = default;
+        QCluster() = default;
 
-    QCluster(const QCluster& other)
-        : std::vector<QPoint>(other), sliceID(other.sliceID)
-    {}
+        QCluster(const QCluster& other)
+            : std::vector<QPoint>(other), sliceID(other.sliceID)
+        {}
 
-    QCluster& operator=(const QCluster& other)
-    {
-        if (this != &other)
+        QCluster& operator=(const QCluster& other)
         {
-            std::vector<QPoint>::operator=(other);
-            sliceID = other.sliceID;
+            if (this != &other)
+            {
+                std::vector<QPoint>::operator=(other);
+                sliceID = other.sliceID;
+            }
+            return *this;
         }
-        return *this;
-    }
+};
+
+
+class QFlash
+{
+    public: 
+        QFlash(){};
+        ~QFlash(){};
+        int flashID = -1;
+        std::vector<double> PE_CH;
+        double y,z,y_err,z_err;
+        double time, time_err;
 };
 
 
