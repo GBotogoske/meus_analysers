@@ -132,7 +132,18 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
     // carrega o servico de visibilidade otica
     fPVS = art::ServiceHandle<phot::PhotonVisibilityService>().get();
     std::cout << "Loaded PVS. NOpChannels = " << fPVS->NOpChannels() << std::endl;
+    /* geo::Point_t pointtt{100.0, 0.0, 100.0};
 
+
+    for (unsigned int ch = 0; ch < fPVS->NOpChannels(); ch++) 
+    {
+        float vis = fPVS->GetVisibility(pointtt, ch);
+        if (vis > 0) std::cout << "Channel " << ch << " sees vis = " << vis << std::endl;
+        else std::cout << "Channel " << ch << " sees vis -1 = " << vis << std::endl;
+    } */
+
+    
+    
 }
 
 void MyFlashMatching::beginJob()
