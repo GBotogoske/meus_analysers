@@ -115,6 +115,8 @@ cet_build_plugin(MyFlashMatching art::module
     dunecore::DuneObj                       
     larsim::MCCheater_ParticleInventoryService_service  
     larsim::MCCheater_PhotonBackTrackerService_service
+    larsim::PhotonPropagation
+    larsim::PhotonPropagation_PhotonVisibilityService_service 
     lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
     art::Framework_Core
     art::Framework_Principal

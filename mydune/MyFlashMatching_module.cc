@@ -24,6 +24,10 @@
 #include "lardata/DetectorInfoServices/DetectorClocksService.h"
 
 #include "larsim/Simulation/LArG4Parameters.h"
+#include "larsim/PhotonPropagation/SemiAnalyticalModel.h"
+
+#include "larsim/PhotonPropagation/PhotonVisibilityService.h"
+#include "larcore/CoreUtils/ServiceUtil.h" 
 
 #include "dunecore/DuneObj/OpDetDivRec.h" 
 #include "duneopdet/OpticalDetector/OpFlashSort.h"
@@ -76,6 +80,7 @@ class MyFlashMatching : public art::EDAnalyzer
         std::vector<float> v_z;
 
         ::art::ServiceHandle<geo::Geometry> geo;
+        
         double drift_length;
         double drift_speed;
         double electronlife;
@@ -85,6 +90,9 @@ class MyFlashMatching : public art::EDAnalyzer
 
         std::vector<QCluster> getQClusters(art::Event const& e);
         std::vector<QFlash> getFlashs(art::Event const& e);
+
+        phot::PhotonVisibilityService const* fPVS;
+
 };
 
 
@@ -120,6 +128,10 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
     this->drift_length = tpc.DriftDistance(); // ~ 360 cm
 
     std::cout << "Drift Distance: " << this->drift_length << std::endl;
+
+    // carrega o servico de visibilidade otica
+    fPVS = art::ServiceHandle<phot::PhotonVisibilityService>().get();
+    std::cout << "Loaded PVS. NOpChannels = " << fPVS->NOpChannels() << std::endl;
 
 }
 
@@ -165,7 +177,10 @@ void MyFlashMatching::analyze(art::Event const& e)
     auto QClusters = getQClusters(e);
     auto QFlashs = getFlashs(e);
     
+    myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed);
+    std::cout << "pudim" << std::endl;
     //std::cout << "Slice ID := " << QClusters[0].sliceID << std::endl; // para o compilador nao reclamar que nao esta sendo usado
+    delete match_operator;
 }
 
 
@@ -192,6 +207,8 @@ std::vector<QCluster> MyFlashMatching::getQClusters(art::Event const& e)
     art::fill_ptr_vector(slices, slice_h);
 
     std::vector<QCluster> QLigths;
+
+    std::cout << "N Slices " << nSlices << std::endl;
 
     //varre os slices
     for (size_t i = 0; i < slices.size(); i++)
