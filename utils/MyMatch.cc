@@ -93,7 +93,7 @@ void myMatch::ChargeHypothesis(const double xoffset)
         this->flash_fit.PE_CH[ch]=0.0;
     }  
 
-    std::vector<double> direct_visibilities;
+    std::vector<double> direct_visibilities(fPVS->NOpChannels(), 0.0);
     direct_visibilities.reserve(fPVS->NOpChannels());
     //varre o cluster
     for(size_t i=0;i<this->cluster_fit.size();i++)
@@ -179,13 +179,15 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
     MyMinuit->SetPrintLevel(-1);
     MyMinuit->SetFCN(myMatch::FCN);
     
-    const double xmin = 0.0;
-    const double xmax = this->drift_length;
-    const double x0   = 0.5 * this->drift_length;
+    
+    const double deltaX = x_max - x_min;
     const double step = 1.0; // cm, por exemplo
+    const double xfitmin = 0.0;
+    const double xfitmax = this->drift_length-deltaX;
+    const double x0   = 0.5 * xfitmax;
 
     int ierr = 0;
-    MyMinuit->DefineParameter(0, "Xoffset", x0, step, xmin, xmax-x_max);
+    MyMinuit->DefineParameter(0, "Xoffset", x0, step, xfitmin, xfitmax);
     double arglist[2] = {5000, 0.01};
     MyMinuit->mnexcm("MIGRAD", arglist, 2, ierr);
     
@@ -226,14 +228,15 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
             {
                 //testa o par
                 startFlash(&qqs[nc],&qfs[nf]);
+
             }
             
         }
-        if(true)
+        if(false)
         {   
             for(int inc=0;inc<Nc;inc++)
             {
-                std::cout << "SliceID => " << qqs[inc].sliceID << std::endl;
+                std::cout << "ClusterID => " << qqs[inc].objID << std::endl;
                 std::cout << "FlashID => " << qfs[nf].flashID << std::endl;
                 std::cout << MYOffset[nf][inc] << " -- " << MYScore[nf][inc] << std::endl;
                 std::cout << "###########################################" << std::endl;    

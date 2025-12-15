@@ -24,12 +24,12 @@ class QPoint
 class QCluster : public std::vector<QPoint>
 {
     public:
-        int sliceID = -1;
+        int objID = -1;
 
         QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), sliceID(other.sliceID)
+            : std::vector<QPoint>(other), objID(other.objID)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -37,7 +37,7 @@ class QCluster : public std::vector<QPoint>
             if (this != &other)
             {
                 std::vector<QPoint>::operator=(other);
-                sliceID = other.sliceID;
+                objID = other.objID;
             }
             return *this;
         }

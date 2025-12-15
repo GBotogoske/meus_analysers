@@ -92,7 +92,10 @@ class MyFlashMatching : public art::EDAnalyzer
 
         int nOPdet;
 
-        std::vector<QCluster> getQClusters(art::Event const& e);
+        void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId);
+        std::vector<QCluster> getQClustersSlices(art::Event const& e); // esse aqui eh por slice
+        std::vector<QCluster> getQClustersPFPs(art::Event const& e); // esse aqui eh por slice
+        std::vector<QCluster> getQClustersTracks(art::Event const& e); // esse aqui eh por track
         std::vector<QFlash> getFlashs(art::Event const& e);
 
         phot::PhotonVisibilityService const* fPVS;
@@ -171,24 +174,6 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
 
 void MyFlashMatching::beginJob()
 {
-    /* art::ServiceHandle<art::TFileService> fs;
-
-    fTree = fs->make<TTree>("sliceTree","Simple slice info");
-    fTree->Branch("run",      &run,      "run/I");
-    fTree->Branch("event",    &event,    "event/I");
-    fTree->Branch("sliceID",  &sliceID,  "sliceID/I");
-    fTree->Branch("nSlices",  &nSlices,  "nSlices/I");
-    fTree->Branch("pfpID",  &pfpID,  "pfpID/I");
-    fTree->Branch("nPFPs",  &nPFPs,  "nPFPs/I");
-    fTree->Branch("nTracksPFP", &nTracksPFP, "nTracksPFP/I");
-    fTree->Branch("trackID",    &trackID,    "trackID/I");
-    fTree->Branch("dEdx", &v_dEdx);
-    fTree->Branch("dQdx", &v_dQdx);
-    fTree->Branch("pitch", &v_pitch);
-    fTree->Branch("x", &v_x);
-    fTree->Branch("y", &v_y);
-    fTree->Branch("z", &v_z); */
-
 }
 
 void MyFlashMatching::analyze(art::Event const& e)
@@ -208,17 +193,135 @@ void MyFlashMatching::analyze(art::Event const& e)
     std::cout << "electron lifetime:=  " << electronlife << std::endl;
     std::cout << "W LAr:=  " << W_LAr << std::endl;
 
-    auto QClusters = getQClusters(e);
+    auto QClusters1 = getQClustersSlices(e);
+    auto QClusters2 = getQClustersPFPs(e);
+    auto QClusters3 = getQClustersTracks(e);
     auto QFlashs = getFlashs(e);
     
-    myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed,fPVS,fSAM);
+    //myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed,fPVS,fSAM);
     std::cout << "pudim" << std::endl;
     //std::cout << "Slice ID := " << QClusters[0].sliceID << std::endl; // para o compilador nao reclamar que nao esta sendo usado
-    delete match_operator;
+    //delete match_operator;
+}
+
+void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId)
+{
+    std::vector<art::Ptr<anab::Calorimetry>> calos = trk_to_calo.at(trk.key());
+    //vetores para salvar as informacoes
+    v_dEdx.clear();
+    v_dQdx.clear();
+    v_pitch.clear();
+    v_x.clear();
+    v_y.clear();
+    v_z.clear();
+
+    //No codigo original tem uma secao de verificar o a posicao do track e se cruzou o plano de fios, e se o track eh uncontained
+    //------------------------------------------------------------------------------------
+    //############### BLA BLA BLA BLA BLA BLA ############################
+    //------------------------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------------------------------
+    //sao 3 planos --> Determinar o melhor plano para fazer a associaco com os flashs
+
+    std::vector<art::Ptr<anab::Calorimetry>> calo_plane(3, art::Ptr<anab::Calorimetry>());
+    for (auto const& calo : calos)
+    {
+        int plane = calo->PlaneID().Plane;
+
+        if (plane < 0 || plane > 2) {
+            //std::cout << "Calo inválido (plane = " << plane << ")" << std::endl;
+            continue;
+        }
+
+        calo_plane[plane] = calo;
+    }
+    
+    int bestPlane = -1;
+    size_t maxSize = 0;
+
+    for (int pl = 0; pl < 3; ++pl)
+    {
+        if (calo_plane[pl].isNull()) continue;
+        size_t nhits = calo_plane[pl]->dEdx().size();
+
+        if (nhits > maxSize)
+        {
+            maxSize = nhits;
+            bestPlane = pl;
+        }
+    }
+    if (bestPlane < 0) 
+    {
+        std::cout << "Track sem calorimetria válida em nenhum plano." << std::endl;
+        return;
+    }
+
+    int plane = bestPlane;
+    //for (int plane = 0; plane < 3; ++plane){
+
+    auto const& calo = calo_plane[plane];
+    
+    if (calo.isNull())
+    {
+        std::cout << "Plano " << plane << " não tem calorimetria." << std::endl;
+        return;
+    }
+    //------------------------- termino de buscar o plano -------------------------------------------------------------------
+    
+    auto const& dEdx_v  = calo->dEdx();
+    auto const& dADCdx_v = calo->dQdx();
+    auto const& pitch_v = calo->TrkPitchVec();
+    auto const& pos_v   = calo->XYZ();
+
+    // create vector of e- instead of ADC units
+    std::vector<float> dQdx_v(dADCdx_v.size(),0);
+    for (size_t s = 0; s < dADCdx_v.size(); s++)
+    {
+        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
+    }
+
+    //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
+
+    //varre todas as posicoes/energia depositadas
+    for (size_t s = 0; s < dEdx_v.size(); s++)
+    {
+        float x = pos_v[s].X();
+        float y = pos_v[s].Y();
+        float z = pos_v[s].Z();
+        if(x<0) //por hora vamos so pegar as posicoes com x positivo
+        {
+            continue;
+        }
+        double drift_time = (drift_length - abs(x))/(drift_speed); //
+        double atten_corr = std::exp(drift_time/electronlife); //
+
+        float pitch;
+        float dE,dQ;
+        float nphotons;
+
+        //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
+        if(true)//valores normais (depois tenho que fazer o outro caso)
+        {
+            pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
+            dQ = dQdx_v[s] * pitch * atten_corr; // corigido pelo drift
+            dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
+            nphotons = dE/(W_LAr*1e-6) - dQ;
+            
+        }
+        else
+        {
+            //aqui depois colocamos os valores estranhos
+        }
+
+        this_qlight.push_back(QPoint(x,y,z,nphotons));
+    }
+    this_qlight.objID=thisId;
 }
 
 
-std::vector<QCluster> MyFlashMatching::getQClusters(art::Event const& e)
+//eu vi que para cosmics eh melhor fazer match diretamente com track/PFParticle em vez de slices ( muito quebrado para cosmics )
+
+std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
 {
    
     // pegar produtos importantes
@@ -268,133 +371,84 @@ std::vector<QCluster> MyFlashMatching::getQClusters(art::Event const& e)
             //varre todos tracks deste PFParticle
             for (auto const& trk : tracks)
             {
-                trackID = trk->ID(); //ID do track
-
+                //trackID = trk->ID(); //ID do track
                 //pega as info de calorimetria
-                std::vector<art::Ptr<anab::Calorimetry>> calos = trk_to_calo.at(trk.key());
-                //vetores para salvar as informacoes
-                v_dEdx.clear();
-                v_dQdx.clear();
-                v_pitch.clear();
-                v_x.clear();
-                v_y.clear();
-                v_z.clear();
-
-                //No codigo original tem uma secao de verificar o a posicao do track e se cruzou o plano de fios, e se o track eh uncontained
-                //------------------------------------------------------------------------------------
-                //############### BLA BLA BLA BLA BLA BLA ############################
-                //------------------------------------------------------------------------------------
-
-                // ---------------------------------------------------------------------------------------------
-                //sao 3 planos --> Determinar o melhor plano para fazer a associaco com os flashs
-
-                std::vector<art::Ptr<anab::Calorimetry>> calo_plane(3, art::Ptr<anab::Calorimetry>());
-                for (auto const& calo : calos)
-                {
-                    int plane = calo->PlaneID().Plane;
-
-                    if (plane < 0 || plane > 2) {
-                        //std::cout << "Calo inválido (plane = " << plane << ")" << std::endl;
-                        continue;
-                    }
-
-                    calo_plane[plane] = calo;
-                }
-                
-                int bestPlane = -1;
-                size_t maxSize = 0;
-
-                for (int pl = 0; pl < 3; ++pl)
-                {
-                    if (calo_plane[pl].isNull()) continue;
-                    size_t nhits = calo_plane[pl]->dEdx().size();
-
-                    if (nhits > maxSize)
-                    {
-                        maxSize = nhits;
-                        bestPlane = pl;
-                    }
-                }
-                if (bestPlane < 0) 
-                {
-                    std::cout << "Track sem calorimetria válida em nenhum plano." << std::endl;
-                    continue;
-                }
-
-                int plane = bestPlane;
-                //for (int plane = 0; plane < 3; ++plane){
-
-                auto const& calo = calo_plane[plane];
-                
-                if (calo.isNull())
-                {
-                    std::cout << "Plano " << plane << " não tem calorimetria." << std::endl;
-                    continue;
-                }
-                //------------------------- termino de buscar o plano -------------------------------------------------------------------
-                
-                auto const& dEdx_v  = calo->dEdx();
-                auto const& dADCdx_v = calo->dQdx();
-                auto const& pitch_v = calo->TrkPitchVec();
-                auto const& pos_v   = calo->XYZ();
-
-                // create vector of e- instead of ADC units
-                std::vector<float> dQdx_v(dADCdx_v.size(),0);
-                for (size_t s = 0; s < dADCdx_v.size(); s++)
-                {
-                    dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
-                }
-
-                //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
-
-                this_qlight.sliceID=sliceID;
-                //varre todas as posicoes/energia depositadas
-                for (size_t s = 0; s < dEdx_v.size(); s++)
-                {
-                    float x = pos_v[s].X();
-                    float y = pos_v[s].Y();
-                    float z = pos_v[s].Z();
-                    if(x<0) //por hora vamos so pegar as posicoes com x positivo
-                    {
-                        continue;
-                    }
-                    double drift_time = (drift_length - abs(x))/(drift_speed); //
-                    double atten_corr = std::exp(drift_time/electronlife); //
-
-                    float pitch;
-                    float dE,dQ;
-                    float nphotons;
-
-                    //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
-                    if(true)//valores normais (depois tenho que fazer o outro caso)
-                    {
-                        pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
-                        dQ = dQdx_v[s] * pitch * atten_corr; // corigido pelo drift
-                        dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
-                        nphotons = dE/(W_LAr*1e-6) - dQ;
-                        
-                    }
-                    else
-                    {
-                        //aqui depois colocamos os valores estranhos
-                    }
-
-                    this_qlight.push_back(QPoint(x,y,z,nphotons));
-                    
-
-                    //mf::LogInfo("DuneSimpleSliceReader")<< "   Calo step (plane " << plane << "): dEdx=" << dEdx<< " pitch=" << pitch<< " pos=(" << x << "," << y << "," << z << ")";
-                    /* 
-                    v_dEdx.push_back(dEdx);
-                    v_pitch.push_back(pitch);
-                    v_x.push_back(x);
-                    v_y.push_back(y);
-                    v_z.push_back(z); */
-                }
-                //}
-                //fTree->Fill();
-
+                returnQCluster(this_qlight,trk,trk_to_calo,sl->ID()); 
             }
         }
+        if(this_qlight.size()>0)
+        {
+            QLigths.push_back(this_qlight);
+        }  
+    }
+    return QLigths;
+}
+
+
+std::vector<QCluster> MyFlashMatching::getQClustersPFPs(art::Event const& e)
+{
+   
+    // pegar produtos importantes
+    
+    auto pfp_h = e.getValidHandle<std::vector<recob::PFParticle>>(fPFPLabel); //PFParticles
+    auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel); // tracks
+    auto calo_h = e.getValidHandle<std::vector<anab::Calorimetry>>(fCaloLabel); //calorimetria
+
+    art::FindManyP<recob::Track> pfp_to_tracks(pfp_h, e, fTrackLabel); // pega a associacao de tracks das PFParticles
+    art::FindManyP<anab::Calorimetry> trk_to_calo(track_h, e, fCaloLabel); // pega as info de calorimetria dos tracks
+
+    std::vector<QCluster> QLigths;
+    
+    std::vector<art::Ptr<recob::PFParticle>> pfps;
+    art::fill_ptr_vector(pfps, pfp_h);
+    nPFPs = pfps.size();
+
+    std::cout << "N PFPs: " << nPFPs << std::endl; 
+
+    //varre todos os pfps deste slice
+    for (auto const& pfp : pfps) 
+    {
+        QCluster this_qlight;
+        pfpID = pfp->Self(); // ID do PFParticle
+        // pegar tracks associados ao PFP
+        std::vector<art::Ptr<recob::Track>> tracks = pfp_to_tracks.at(pfp.key());
+        nTracksPFP = tracks.size();
+
+        //varre todos tracks deste PFParticle
+        for (auto const& trk : tracks)
+        {
+            returnQCluster(this_qlight,trk,trk_to_calo, pfp->Self()); 
+        }
+        if(this_qlight.size()>0)
+        {
+            QLigths.push_back(this_qlight);
+        }  
+    }
+    return QLigths;
+}
+
+std::vector<QCluster> MyFlashMatching::getQClustersTracks(art::Event const& e)
+{ 
+    // pegar produtos importantes
+    auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel); // tracks
+    auto calo_h = e.getValidHandle<std::vector<anab::Calorimetry>>(fCaloLabel); //calorimetria
+
+    art::FindManyP<anab::Calorimetry> trk_to_calo(track_h, e, fCaloLabel); // pega as info de calorimetria dos tracks
+
+    std::vector<QCluster> QLigths;
+    //varre os tracks
+
+    std::vector<art::Ptr<recob::Track>> tracks;
+    art::fill_ptr_vector(tracks, track_h);
+    auto nTracks = tracks.size();
+
+    std::cout << "N TRACKS: " << nTracks << std::endl; 
+    //varre todos tracks deste PFParticle
+    for (auto const& trk : tracks)
+    {
+        QCluster this_qlight;
+        returnQCluster(this_qlight,trk,trk_to_calo,trk->ID()); 
+       
         if(this_qlight.size()>0)
         {
             QLigths.push_back(this_qlight);
@@ -433,7 +487,7 @@ std::vector<QFlash> MyFlashMatching::getFlashs(art::Event const& e)
         auto const& flash = flashlist[i];
         auto hits = OpHits_from_Flashs.at(flash.key());
         int number_hits=hits.size();
-        this_qflash.flashID=i;//flash.key();
+        this_qflash.flashID=flash.key();
         this_qflash.PE_CH.resize(this->nOPdet);
         for(int j=0; j<this->nOPdet ; j++)
         {
@@ -442,7 +496,7 @@ std::vector<QFlash> MyFlashMatching::getFlashs(art::Event const& e)
         for(int j=0;j<number_hits;j++)
         {
             int this_ch=hits[j]->OpChannel();
-            this_qflash.PE_CH[this_ch]=hits[j]->PE();
+            this_qflash.PE_CH[this_ch]+=hits[j]->PE();
         }
 
         this_qflash.y = flash->YCenter();
