@@ -5,7 +5,10 @@ myMatch::myMatch()
 {}
 
 myMatch::~myMatch()
-{}
+{
+    delete MyMinuit;
+    MyMinuit = nullptr;
+}
 
 bool myMatch::checkPossibility(const QCluster* qs,const  QFlash* qf)
 {
@@ -51,24 +54,17 @@ double myMatch::NLL()
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
     double nll = 0.0;
-    double _pe_eps = 1e-6;
+    double eps = 1e-6;
+    if(normPE) flash_fit.norm_this_flash();
     for (int ch = 0; ch < CH_MAX; ++ch)
     {
         double O = flash_actual.PE_CH[ch]; //OBSERVADO
         double H = flash_fit.PE_CH[ch]; //HIPOTESE
 
         // thresholds pra não explodir log(0)
-        if (O < _pe_eps) 
-        {
-            O  = _pe_eps;
-        } 
-        if (H < _pe_eps)
-        {
-            H = _pe_eps;
-        } 
-
+        if (H < eps) H = eps;
         // Poisson NLL (com gamma pra O double)
-        nll += (H - O * std::log(H) + std::lgamma(O + 1.0));
+        nll += (H - O * std::log(H));// + std::lgamma(O + 1.0));
     }
     return nll;
 
@@ -113,7 +109,18 @@ void myMatch::ChargeHypothesis(const double xoffset)
         
         fSAM->detectedDirectVisibilities(direct_visibilities, point);
        
-        for(int ch=0;ch<CH_MAX;++ch)
+        int chi=0;
+        int chf=CH_MAX;
+
+        if(fDetectorZone=="Positive")
+        {
+            chf=80;
+        }
+        if(fDetectorZone=="Negative")
+        {
+            chi=80;
+        }
+        for(int ch=chi;ch<chf;++ch)
         {   
             //std::cout << "i := " << i << std::endl;  
             //std::vector<double> reflected_visibilities;
@@ -176,17 +183,26 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
     } 
     // fazer configuracoes do minuit
     // 
+
+    const double deltaX = x_max - x_min;
+    const double step = 0.5;
+    double xfitmin = -this->drift_length;
+    double xfitmax = this->drift_length-deltaX;
+    if(fDetectorZone=="Positive")
+    {
+        xfitmin = 0;
+    }
+     if(fDetectorZone=="Negative")
+    {
+        xfitmax = 0-deltaX;
+    }
+    
+    const double x0 = (xfitmax-xfitmin)/2.0;
+    int ierr = 0;
+    MyMinuit->mnexcm("CLEAR", nullptr, 0, ierr);
     MyMinuit->SetPrintLevel(-1);
     MyMinuit->SetFCN(myMatch::FCN);
     
-    
-    const double deltaX = x_max - x_min;
-    const double step = 1.0; // cm, por exemplo
-    const double xfitmin = 0.0;
-    const double xfitmax = this->drift_length-deltaX;
-    const double x0   = 0.5 * xfitmax;
-
-    int ierr = 0;
     MyMinuit->DefineParameter(0, "Xoffset", x0, step, xfitmin, xfitmax);
     double arglist[2] = {5000, 0.01};
     MyMinuit->mnexcm("MIGRAD", arglist, 2, ierr);
@@ -201,13 +217,16 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
 }
 
 myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
-    double drift_speed,phot::PhotonVisibilityService const* PVS, phot::SemiAnalyticalModel const* SAM)
+    double drift_speed,phot::PhotonVisibilityService const* PVS, phot::SemiAnalyticalModel const* SAM, bool norm, std::string DetectorZone)
 {
     this->drift_length = drift_length;
     this->drift_speed = drift_speed;
     this->fPVS = PVS;
     this->fSAM = SAM;
 
+    this->normPE = norm; 
+    this->fDetectorZone = DetectorZone;
+    
     //ZERA o vetor de fit
     flash_fit.PE_CH.clear();
     flash_fit.PE_CH.resize(fPVS->NOpChannels());
@@ -215,8 +234,11 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
     this->Nc = qqs.size();
     this->Nf = qfs.size();
 
-    MYScore.assign(Nf, std::vector<double>(Nc, -1.0));
+    const double BIG = 1e15; 
+    MYScore.assign(Nf, std::vector<double>(Nc, BIG));
     MYOffset.assign(Nf, std::vector<double>(Nc, -1.0));
+
+    this->CH_MAX = fPVS->NOpChannels();
 
     //talvez colocar um algoritmo de filtro para filtrar cluster e flashs? --> tipo isso usado no codigo no SBND _alg_tpc_filter->Filter(_tpc_object_v);
     for(nf=0;nf<Nf;nf++)
@@ -227,26 +249,38 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
             if(true)//this->checkPossibility(&qqs[nc],&qfs[nf]))
             {
                 //testa o par
+                std::cout << nf << " -- " << nc << std::endl; 
                 startFlash(&qqs[nc],&qfs[nf]);
-
             }
-            
-        }
-        if(false)
-        {   
-            for(int inc=0;inc<Nc;inc++)
-            {
-                std::cout << "ClusterID => " << qqs[inc].objID << std::endl;
-                std::cout << "FlashID => " << qfs[nf].flashID << std::endl;
-                std::cout << MYOffset[nf][inc] << " -- " << MYScore[nf][inc] << std::endl;
-                std::cout << "###########################################" << std::endl;    
-            }
-            std::cout << "Press ENTER." << std::endl;
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');   
             
         }
     }
+
+    this->HR =  hungarian_min(MYScore);
+    std::cout << "Custo minimo = " << this->HR.cost << "\n";
+
+    const int nRows = std::min((int)this->HR.assign.size(), this->Nf);
+
+    for (int nf = 0; nf < nRows; ++nf) 
+    {
+        const int nc = this->HR.assign[nf];
+
+        // se caiu em dummy / não atribuído
+        if (nc < 0 || nc >= this->Nc) 
+        {
+            std::cout << "Flash row " << nf
+                    << " (FlashID=" << qfs[nf].flashID << ")"
+                    << " -> unassigned/dummy (col=" << nc << ")\n";
+            continue;
+        }
+
+        std::cout << "Flash row " << nf
+                << " (FlashID=" << qfs[nf].flashID << ")"
+                << " -> Cluster col " << nc
+                << " (ClusterID=" << qqs[nc].objID << ")"
+                << " | cost=" << this->MYScore[nf][nc]
+                << " | xoffset=" << this->MYOffset[nf][nc] << " cm\n";
+    }
+
    
-
-
 }

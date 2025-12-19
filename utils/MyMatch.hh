@@ -13,7 +13,7 @@ class myMatch
     public:
         myMatch();
         myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
-            double drift_speed, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM);
+            double drift_speed, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM, bool norm=false, std::string DetectorZone = "All");
         ~myMatch();
 
         int Nc;
@@ -46,12 +46,13 @@ class myMatch
         phot::PhotonVisibilityService const* fPVS;
         phot::SemiAnalyticalModel const* fSAM;
 
+        struct HungarianResult HR;
+
         double eff = 0.03;
+        bool normPE = false;    
+        std::string fDetectorZone = "All";
 
         bool pause_now=false;
-
-        
-
 
 };
 

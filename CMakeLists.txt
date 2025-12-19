@@ -23,7 +23,7 @@ cet_build_plugin(MyFlashMatching art::module
     utils
 )
 
-cet_build_plugin(GetFlashMatchingMC art::module
+cet_build_plugin(MyFlashMatchingMC art::module
   LIBRARIES
     larcorealg::Geometry
     lardataobj::RawData
@@ -42,6 +42,24 @@ cet_build_plugin(GetFlashMatchingMC art::module
     ROOT::Tree
 )
 
+cet_build_plugin(getophitMCPE art::module
+  LIBRARIES
+    larcorealg::Geometry
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    larsim::MCCheater_BackTrackerService_service
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    lardataalg::DetectorInfo 
+    art::Framework_Core
+    art::Framework_Principal
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+)
 
 install_headers()
 install_fhicl()
