@@ -32,11 +32,12 @@ class QCluster : public std::vector<QPoint>
 {
     public:
         int objID = -1;
+        int type = 0; // 0 --> track, 1-->shower, 2-->PFP, 3-->Slice
 
         QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -45,14 +46,11 @@ class QCluster : public std::vector<QPoint>
             {
                 std::vector<QPoint>::operator=(other);
                 objID = other.objID;
+                type = other.type;
             }
             return *this;
         }
 };
-
-
-#include <vector>
-#include <algorithm>
 
 class QFlash
 {

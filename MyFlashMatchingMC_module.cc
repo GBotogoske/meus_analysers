@@ -18,9 +18,18 @@
 
 #include "lardataobj/RecoBase/OpFlash.h"
 #include "lardataobj/RecoBase/OpHit.h"
+#include "lardataobj/RecoBase/Slice.h"
 #include "lardataobj/RecoBase/Track.h"
+#include "lardataobj/RecoBase/Shower.h"
 #include "lardataobj/RecoBase/Hit.h"
+#include "lardataobj/RecoBase/PFParticle.h"
 
+#include "larcore/Geometry/Geometry.h"
+#include "larcore/Geometry/WireReadout.h"
+
+#include "larcorealg/Geometry/WireReadoutGeom.h"
+
+#include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
 #include "lardata/DetectorInfoServices/DetectorClocksService.h"
 
 #include "larsim/MCCheater/ParticleInventoryService.h"
@@ -36,6 +45,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 static void Normalize(std::unordered_map<int,double>& w)
 {
@@ -157,7 +167,10 @@ class MyFlashMatchingMC : public art::EDAnalyzer
 
     private:
         art::InputTag fFlashLabel;
-        art::InputTag fTrackLabel; // (você pode continuar chamando de SliceLabel no FHiCL se quiser)
+        art::InputTag fTrackLabel; 
+        art::InputTag fShowerLabel;//
+        art::InputTag fSliceLabel;
+        art::InputTag fPFPLabel;
 
         double fMinJaccard;   // corte pra salvar par
         int    fMaxStore;     // truncar vetores no TTree
@@ -185,15 +198,18 @@ class MyFlashMatchingMC : public art::EDAnalyzer
         int fTrackRecoID=-1; // Track::ID()
         int fTrackDomTID=0, fTrackDomPDG=0;
         float fTrackDomW=0.f;
+        int fType;
         std::vector<int>   fTrackTIDs;
         std::vector<int>   fTrackPDGs;
         std::vector<float> fTrackW;
 
+        bool getShowers = false;
 
         // --- pair branches ---
         int fPairFlashKey=-1;
         int fPairTrackKey=-1;
         int fPairTrackRecoID=-1;
+        int fPairType=-1;
 
         float fOverlap=0.f;
         float fJaccard=0.f;
@@ -207,20 +223,46 @@ class MyFlashMatchingMC : public art::EDAnalyzer
                                                     cheat::PhotonBackTrackerService& pbts) const;
 
         std::unordered_map<int,double> BuildTrackMap(detinfo::DetectorClocksData const& clockData,
+                                                     detinfo::DetectorPropertiesData const& detProp,
                                                     std::vector<art::Ptr<recob::Hit>> const& hits,
                                                     cheat::BackTrackerService const& bts) const;
+
+
+        double limitMinFlash = 0.0;
+        double limitMinFlashSide = 0.0;
+        double trackLength = 0.0;
+        std::string DetectorZone;
+        std::string ClusterType; //Slice,Track
+
+        int nTtotal = 0;
+        int nFTotal = 0 ;
 };
 
 MyFlashMatchingMC::MyFlashMatchingMC(fhicl::ParameterSet const& p)
   : EDAnalyzer(p)
 {
     fFlashLabel = p.get<art::InputTag>("FlashLabel");
-    // Para não quebrar teu FHiCL antigo:
-    // use "TrackLabel" se existir, senão usa "SliceLabel".
-    fTrackLabel = p.get<art::InputTag>("TrackLabel", p.get<art::InputTag>("SliceLabel"));
+    fSliceLabel = p.get<art::InputTag>("SliceLabel");  
+    fTrackLabel = p.get<art::InputTag>("TrackLabel");
+    fShowerLabel = p.get<art::InputTag>("ShowerLabel");
+
+    fPFPLabel = p.get<art::InputTag>("PFParticleLabel");
 
     fMinJaccard = p.get<double>("MinJaccard", 0.0);
     fMaxStore   = p.get<int>("MaxStore", 50);
+
+    ClusterType=p.get<std::string>("ClusterType","Track");
+    DetectorZone=p.get<std::string>("DetectorZone","All");
+    limitMinFlash = p.get<double>("limitMinFlash",0.0);
+    limitMinFlashSide = p.get<double>("limitMinFlashSide",0.0);
+    trackLength = p.get<double>("trackLengthMin",0.0);
+
+    getShowers = p.get<bool>("getShowers",false);
+    if(getShowers)
+        std::cout << "Getting Showers!!! " << std::endl;
+    else
+        std::cout << "Not Getting Showers!!! " << std::endl;
+
 }
 
 void MyFlashMatchingMC::beginJob()
@@ -245,6 +287,7 @@ void MyFlashMatchingMC::beginJob()
     fTreeT->Branch("event", &fEvent);
     fTreeT->Branch("trackKey", &fTrackKey);
     fTreeT->Branch("trackRecoID", &fTrackRecoID);
+    fTreeT->Branch("type", &fType);
     fTreeT->Branch("domTID", &fTrackDomTID);
     fTreeT->Branch("domPDG", &fTrackDomPDG);
     fTreeT->Branch("domW", &fTrackDomW);
@@ -257,6 +300,7 @@ void MyFlashMatchingMC::beginJob()
     fTreeFT->Branch("event", &fEvent);
     fTreeFT->Branch("flashKey", &fPairFlashKey);
     fTreeFT->Branch("trackKey", &fPairTrackKey);
+    fTreeFT->Branch("type", &fPairType);
     fTreeFT->Branch("trackRecoID", &fPairTrackRecoID);
     fTreeFT->Branch("overlapMin", &fOverlap);
     fTreeFT->Branch("jaccardW", &fJaccard);
@@ -272,12 +316,15 @@ MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophi
 {
   std::unordered_map<int,double> w;
 
-  for (auto const& oph : ophits) {
+  for (auto const& oph : ophits) 
+  {
+    if(DetectorZone == "Positive" && oph->OpChannel() >= 80) continue;
+    if(DetectorZone == "Negative" && oph->OpChannel() < 80) continue;
     // SDPs “crus” que contribuíram para esse OpHit
     auto sdps = pbts.OpHitToSimSDPs_Ps(oph); // vector<const sim::SDP*> :contentReference[oaicite:2]{index=2}
     if (sdps.empty()) continue;
 
-    // soma fotões totais (dentro desse OpHit)
+    // soma fotons totais (dentro desse OpHit)
     double totPhot = 0.0;
     for (auto const* sdp : sdps) {
       if (!sdp) continue;
@@ -285,7 +332,7 @@ MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophi
       totPhot += std::max(0.f, sdp->numPhotons); // numPhotons existe em sim::SDP :contentReference[oaicite:3]{index=3}
     }
 
-    // fallback: se não tem fotões, volta pro teu método antigo (igualitário)
+    // fallback: se não tem fotons, volta pro teu método antigo (igualitário)
     if (totPhot <= 0.0) {
       auto tids = pbts.OpHitToTrackIds(oph);
       if (tids.empty()) continue;
@@ -302,12 +349,14 @@ MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophi
     }
 
     // distribui o PE do hit proporcional ao numPhotons por trackID
-    for (auto const* sdp : sdps) {
+    for (auto const* sdp : sdps) 
+    {
       if (!sdp) continue;
       int tid = AbsTID(sdp->trackID);
       if (tid == 0) continue;
 
       double frac = std::max(0.f, sdp->numPhotons) / totPhot;
+      
       w[tid] += oph->PE() * frac;
     }
   }
@@ -318,12 +367,34 @@ MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophi
 
 std::unordered_map<int,double>
 MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
+                                 detinfo::DetectorPropertiesData const& detProp,
                                  std::vector<art::Ptr<recob::Hit>> const& hits,
                                  cheat::BackTrackerService const& bts) const
 {
+
     std::unordered_map<int,double> w;
+    auto const& wireReadout = art::ServiceHandle<geo::WireReadout const>()->Get();
+
     for (auto const& h : hits)
     {
+        auto wireIDs = wireReadout.ChannelToWire(h->Channel());
+        if (wireIDs.empty()) continue;
+        auto const& wid = wireIDs.front();
+
+        geo::PlaneID pid{wid.Cryostat, wid.TPC, wid.Plane};
+        double xWire = wireReadout.Plane(pid).GetCenter().X();
+       /*  double yWire = wireReadout.Plane(pid).GetCenter().Y();
+        double zWire = wireReadout.Plane(pid).GetCenter().Z();
+        std::cout << "Cryostat : " << wid.Cryostat << std::endl;
+        std::cout << "TPC : " << wid.TPC << std::endl;
+        std::cout << "Plane : " << wid.Plane << std::endl;
+        std::cout << "X : " << xWire << std::endl;
+        std::cout << "Y : " << yWire << std::endl;
+        std::cout << "Z : " << zWire << std::endl;
+        */
+        if (DetectorZone == "Positive" && xWire<0) continue;
+        if (DetectorZone == "Negative" && xWire>0) continue;
+       
         auto ides = bts.HitToTrackIDEs(clockData, h);
         for (auto const& ide : ides)
         {
@@ -335,13 +406,19 @@ MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
     return w;
 }
 
+
 void MyFlashMatchingMC::analyze(art::Event const& e)
 {
+    nFTotal = 0;
+    nTtotal = 0;
+
     fRun   = e.run();
     fEvent = e.event();
 
     auto const clockData =
     art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
+
+    auto const detProp = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(e, clockData);
 
     auto& pbts = *art::ServiceHandle<cheat::PhotonBackTrackerService>();
     auto const& bts  = *art::ServiceHandle<cheat::BackTrackerService const>();
@@ -374,7 +451,29 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         auto const& fl = flashes[f];
         auto ophits = fmOpHits.at(fl.key());
 
+        auto flash1 = 0.0;
+        auto flash2 = 0.0;
+        for(auto const& op: ophits)
+        {
+            int ch = op->OpChannel();
+            if(ch<80)
+            {
+                flash1+=op->PE();          
+            }
+            else
+            {
+                flash2+=op->PE();     
+            }
+        }
+        auto flashT=flash1+flash2;
+        bool pass =  (flashT>limitMinFlash);
+        if(DetectorZone=="Positive") pass = pass && (flash1>limitMinFlashSide);
+        if(DetectorZone=="Negative") pass = pass && (flash2>limitMinFlashSide);
+        if(!pass) continue;
+      
         auto wF = BuildFlashMap(ophits, pbts);
+        if (wF.empty()) continue;
+        nFTotal++;
         Normalize(wF);
         flashMaps[f] = wF;
 
@@ -401,36 +500,168 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
     }
 
     // ---- tracks ----
-    auto track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
-    if (!track_h) 
-    {
-        mf::LogWarning("MyFlashMatchingMC") << "Cannot load Track: " << fTrackLabel;
-        return;
-    }
-    art::FindManyP<recob::Hit> fmHits(track_h, e, fTrackLabel);
-    if (!fmHits.isValid()) 
-    {
-        mf::LogWarning("MyFlashMatchingMC") << "No Track<->Hit assns for " << fTrackLabel;
-        return;
-    }
+
+    art::Handle<std::vector<recob::Track>> track_h;
+    art::Handle<std::vector<recob::Shower>> shower_h;
+    art::Handle<std::vector<recob::Slice>> slice_h;
 
     std::vector<art::Ptr<recob::Track>> tracks;
-    art::fill_ptr_vector(tracks, track_h);
-    const int nT = (int)tracks.size();
+    std::vector<art::Ptr<recob::Slice>> slices;
+    std::vector<art::Ptr<recob::Shower>> showers;
+    std::optional<art::FindManyP<recob::Hit>> fmHits;
+    std::optional<art::FindManyP<recob::Hit>> fmHitsShower;
+    
+    art::InputTag assnLabel;
 
-    std::vector<std::unordered_map<int,double>> trackMaps(nT);
+    std::optional<art::FindManyP<recob::PFParticle>> slice_to_pfps;
+    std::optional<art::FindManyP<recob::Track>> pfp_to_tracks;
 
-    for (int t = 0; t < nT; ++t)
+    int nT,nS=0;
+    if (ClusterType == "Track")
     {
-        auto const& trk = tracks[t];
-        auto hits = fmHits.at(trk.key());
+        track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
+        if (!track_h) {
+            mf::LogWarning("MyFlashMatchingMC") << "Cannot load Track: " << fTrackLabel;
+            return;
+        }
+        assnLabel = fTrackLabel;
+        fmHits.emplace(track_h, e, assnLabel);
+        if (!fmHits->isValid()) 
+        {
+            mf::LogWarning("MyFlashMatchingMC") << "No <obj><->Hit assns for " << assnLabel;
+            return;
+        }
+        art::fill_ptr_vector(tracks, track_h);
+        nT = (int)tracks.size();
+        if(getShowers)
+        {
+            shower_h = e.getHandle<std::vector<recob::Shower>>(fShowerLabel);
+            if (!shower_h) {
+                mf::LogWarning("MyFlashMatchingMC") << "Cannot load Shower: " << fShowerLabel;
+                return;
+            }
+            fmHitsShower.emplace(shower_h, e, fShowerLabel);
+            if (!fmHitsShower->isValid()) 
+            {
+                mf::LogWarning("MyFlashMatchingMC") << "No <obj><->Hit assns for " << fShowerLabel;
+                return;
+            }
+            art::fill_ptr_vector(showers, shower_h);
+            nS = (int)showers.size();
+        }
+    }
+    else
+    {
+        track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
+        if (!track_h)
+        {
+            mf::LogWarning("MyFlashMatchingMC") << "Cannot load Track: " << fTrackLabel;
+            return;
+        }
 
-        auto wT = BuildTrackMap(clockData, hits, bts);
+        slice_h = e.getHandle<std::vector<recob::Slice>>(fSliceLabel);
+        if (!slice_h) {
+            mf::LogWarning("MyFlashMatchingMC") << "Cannot load Slice: " << fSliceLabel;
+            return;
+        }
+        assnLabel = fSliceLabel;
+        fmHits.emplace(track_h, e, fTrackLabel);
+        art::fill_ptr_vector(slices, slice_h);
+        nT = (int)slices.size();
+
+        auto pfp_h = e.getHandle<std::vector<recob::PFParticle>>(fPFPLabel);
+        if (!pfp_h)
+        {
+            mf::LogWarning("MyFlashMatchingMC") << "Cannot load PFParticle: " << fPFPLabel;
+            return;
+        }
+        slice_to_pfps.emplace(slice_h, e, fSliceLabel);
+        pfp_to_tracks.emplace(pfp_h, e, fTrackLabel);
+        if (!slice_to_pfps->isValid() || !pfp_to_tracks->isValid())
+        {
+            mf::LogWarning("MyFlashMatchingMC")
+            << "Missing Slice<->PFParticle or PFParticle<->Track associations.";
+            return;
+        }
+
+    }
+
+    int nTotal = nT + nS;
+    std::vector<std::unordered_map<int,double>> trackMaps(nTotal);
+
+    for (int t = 0; t < (nTotal); ++t)
+    {
+        std::vector<art::Ptr<recob::Hit>> hits;
+        if(ClusterType == "Track")
+        {
+            if(t<nT)
+            {
+                auto const& trk = tracks[t];
+                if (trk->Length() < trackLength) continue;
+                fTrackKey = trk.key();
+                fTrackRecoID = trk->ID();
+                hits = fmHits->at(trk.key());  
+                fType = 0 ;
+            }
+            else
+            {
+                if(getShowers)
+                {
+                    int index = t-nT;
+                    auto const& shw = showers[index];
+                    if (shw->Length() < trackLength) continue;
+                    fTrackKey = shw.key();
+                    fTrackRecoID = shw->ID();
+                    hits = fmHitsShower->at(shw.key());  
+                    fType = 1 ;
+                }
+            }
+            
+        }
+        else
+        {
+            auto const& slice = slices[t];
+            fTrackKey = slice.key();
+            fTrackRecoID = slice->ID();
+            fType = 3 ;
+
+            std::vector<art::Ptr<recob::Hit>> hits_sel;
+            bool anyGoodTrack = false;
+
+            std::unordered_set<size_t> seen;
+
+            auto pfps = slice_to_pfps->at(slice.key());
+            for (auto const& pfp : pfps)
+            {
+                auto trks = pfp_to_tracks->at(pfp.key());
+                for (auto const& trk : trks) 
+                {
+                    if (trk.isNull()) continue;
+                    if (trk->Length() < trackLength) continue;  
+
+                    anyGoodTrack = true;
+                    auto trkHits = fmHits->at(trk.key());
+                    // >>> DEDUPE: evita contar o mesmo hit duas vezes
+                    for (auto const& h : trkHits)
+                    {
+                        if (h.isNull()) continue;
+                        if (!seen.insert(h.key()).second) continue; // já tinha
+                        hits_sel.push_back(h);
+                    }
+                }
+            }
+            if (!anyGoodTrack) continue;
+            if (hits_sel.empty()) continue;
+
+            hits = std::move(hits_sel);
+  
+        }
+     
+        auto wT = BuildTrackMap(clockData, detProp, hits, bts);
+        if (wT.empty()) continue;
+        nTtotal++;     
         Normalize(wT);
         trackMaps[t] = wT;
-
-        fTrackKey    = trk.key();
-        fTrackRecoID = trk->ID();
 
         double wmax=0.0;
         fTrackDomTID = DominantID(wT, wmax);
@@ -451,8 +682,10 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
     // ---- candidates flash ↔ track ----
     for (int f = 0; f < nF; ++f) 
     {
-        for (int t = 0; t < nT; ++t) 
+        if (flashMaps[f].empty()) continue; 
+        for (int t = 0; t < nTotal; ++t) 
         {
+            if (trackMaps[t].empty()) continue;
             double ov  = OverlapMin(flashMaps[f], trackMaps[t]);
             if (ov <= 0.0) continue;
 
@@ -460,8 +693,31 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             if (jac < fMinJaccard) continue;
 
             fPairFlashKey   = flashes[f].key();
-            fPairTrackKey   = tracks[t].key();
-            fPairTrackRecoID= tracks[t]->ID();
+            if(ClusterType == "Track")
+            {
+                if(t<nT)
+                {   
+                    fPairTrackKey   = tracks[t].key();
+                    fPairTrackRecoID= tracks[t]->ID();
+                    fPairType = 0;
+                }
+                else
+                {
+                    if(getShowers)
+                    {
+                        int index = t-nT;
+                        fPairTrackKey   = showers[index].key();
+                        fPairTrackRecoID= showers[index]->ID();
+                        fPairType = 1;
+                    }
+                }
+            }
+            else
+            {
+                fPairTrackKey   = slices[t].key();
+                fPairTrackRecoID= slices[t]->ID();
+                fPairType = 3;
+            }
             fOverlap        = (float)ov;
             fJaccard        = (float)jac;
 
@@ -510,9 +766,11 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         }
     }
 
+    std::string type_s  = (ClusterType == "Track") ? "tracks" : "slices";
+
     mf::LogInfo("MyFlashMatchingMC")
     << "Processed run " << fRun << " event " << fEvent
-    << " (flashes=" << nF << ", tracks=" << nT << ")";
+    << " (flashes=" << nFTotal << ", "<< type_s << "=" << nTtotal << " )";
 }
 
 DEFINE_ART_MODULE(MyFlashMatchingMC)

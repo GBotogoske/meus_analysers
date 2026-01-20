@@ -54,20 +54,31 @@ double myMatch::NLL()
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
     double nll = 0.0;
-    double eps = 1e-6;
-    if(normPE) flash_fit.norm_this_flash();
-    for (int ch = 0; ch < CH_MAX; ++ch)
+    double eps = 1e-12;
+    int chi=0;
+    int chf=CH_MAX;
+
+    if(fDetectorZone=="Positive")
     {
+        chf=80;
+    }
+    if(fDetectorZone=="Negative")
+    {
+        chi=80;
+    }
+
+    if(normPE) flash_fit.norm_this_flash();
+
+    for(int ch=chi;ch<chf;++ch)
+    {   
         double O = flash_actual.PE_CH[ch]; //OBSERVADO
         double H = flash_fit.PE_CH[ch]; //HIPOTESE
-
-        // thresholds pra não explodir log(0)
         if (H < eps) H = eps;
-        // Poisson NLL (com gamma pra O double)
-        nll += (H - O * std::log(H));// + std::lgamma(O + 1.0));
+
+        // Poisson NLL (com gamma pra O double) --> se normalizado vira (cross entropy) (sum(H)=1)
+        nll += (H - O * std::log(H)); //+ std::lgamma(O + 1.0); remover o gamma porque eh cte 
     }
     return nll;
-
 }
 
 void myMatch::ChargeHypothesis(const double xoffset)
@@ -197,14 +208,14 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
         xfitmax = 0-deltaX;
     }
     
-    const double x0 = (xfitmax-xfitmin)/2.0;
+    const double x0 = (xfitmax+xfitmin)/2.0;
     int ierr = 0;
     MyMinuit->mnexcm("CLEAR", nullptr, 0, ierr);
     MyMinuit->SetPrintLevel(-1);
     MyMinuit->SetFCN(myMatch::FCN);
     
     MyMinuit->DefineParameter(0, "Xoffset", x0, step, xfitmin, xfitmax);
-    double arglist[2] = {5000, 0.01};
+    double arglist[2] = {10000, 0.001};//{5000, 0.01};
     MyMinuit->mnexcm("MIGRAD", arglist, 2, ierr);
     
     double bestx=0, bestxerr=0;
@@ -249,15 +260,15 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
             if(true)//this->checkPossibility(&qqs[nc],&qfs[nf]))
             {
                 //testa o par
-                std::cout << nf << " -- " << nc << std::endl; 
+                /* std::cout << nf << " -- " << nc << std::endl;  */
                 startFlash(&qqs[nc],&qfs[nf]);
             }
             
         }
     }
 
-    this->HR =  hungarian_min(MYScore);
-    std::cout << "Custo minimo = " << this->HR.cost << "\n";
+    this->HR =  hungarian_min(MYScore); // aqui tava comentado, acho que era por isso
+    /* std::cout << "Custo minimo = " << this->HR.cost << "\n"; 
 
     const int nRows = std::min((int)this->HR.assign.size(), this->Nf);
 
@@ -265,22 +276,22 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
     {
         const int nc = this->HR.assign[nf];
 
-        // se caiu em dummy / não atribuído
+         // se caiu em dummy / não atribuído
         if (nc < 0 || nc >= this->Nc) 
         {
             std::cout << "Flash row " << nf
                     << " (FlashID=" << qfs[nf].flashID << ")"
                     << " -> unassigned/dummy (col=" << nc << ")\n";
             continue;
-        }
+        } 
 
         std::cout << "Flash row " << nf
                 << " (FlashID=" << qfs[nf].flashID << ")"
                 << " -> Cluster col " << nc
                 << " (ClusterID=" << qqs[nc].objID << ")"
                 << " | cost=" << this->MYScore[nf][nc]
-                << " | xoffset=" << this->MYOffset[nf][nc] << " cm\n";
-    }
+                << " | xoffset=" << this->MYOffset[nf][nc] << " cm\n"; 
+    } */
 
    
 }
