@@ -16,28 +16,29 @@ class QPoint
         QPoint()
         {
         }
-        QPoint(double x0,double y0,double z0, double q0)
+        QPoint(double x0,double y0,double z0, double q0, double pitch0 = 0.0)
         {
             x=x0;
             y=y0;
             z=z0;
             q=q0;
+            pitch=pitch0;
         }
         ~QPoint() {}
-        double x,y,z,q;
+        double x,y,z,q,pitch;
 };
-
 
 class QCluster : public std::vector<QPoint>
 {
     public:
         int objID = -1;
         int type = 0; // 0 --> track, 1-->shower, 2-->PFP, 3-->Slice
+        int APA = 0;
 
         QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID), type(other.type)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -47,10 +48,12 @@ class QCluster : public std::vector<QPoint>
                 std::vector<QPoint>::operator=(other);
                 objID = other.objID;
                 type = other.type;
+                APA = other.APA;
             }
             return *this;
         }
 };
+
 
 class QFlash
 {
@@ -62,7 +65,7 @@ public:
     int flashID = -1;
     std::vector<double> PE_CH;
 
-    double y = 0.0, z = 0.0, y_err = 0.0, z_err = 0.0;
+    double y = 0.0, z = 0.0, x=0.0, y_err = 0.0, z_err = 0.0;
     double time = 0.0, time_err = 0.0;
 
     void norm_this_flash()

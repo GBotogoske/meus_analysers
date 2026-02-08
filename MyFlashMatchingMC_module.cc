@@ -515,6 +515,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
 
     std::optional<art::FindManyP<recob::PFParticle>> slice_to_pfps;
     std::optional<art::FindManyP<recob::Track>> pfp_to_tracks;
+    std::optional<art::FindManyP<recob::Shower>> pfp_to_showers;
 
     int nT,nS=0;
     if (ClusterType == "Track")
@@ -584,6 +585,28 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             return;
         }
 
+        
+        if (getShowers)
+        {
+            shower_h = e.getHandle<std::vector<recob::Shower>>(fShowerLabel);
+            if (!shower_h) {
+                mf::LogWarning("MyFlashMatchingMC") << "Cannot load Shower: " << fShowerLabel;
+                return;
+            }
+
+            fmHitsShower.emplace(shower_h, e, fShowerLabel);
+            if (!fmHitsShower->isValid()) {
+                mf::LogWarning("MyFlashMatchingMC") << "No Shower<->Hit assns for " << fShowerLabel;
+                return;
+            }
+
+            // PFParticle -> Shower (assns produzidas pelo módulo de shower)
+            pfp_to_showers.emplace(pfp_h, e, fShowerLabel);
+            if (!pfp_to_showers->isValid()) {
+                mf::LogWarning("MyFlashMatchingMC") << "No PFParticle<->Shower assns for " << fShowerLabel;
+                return;
+            }
+        }
     }
 
     int nTotal = nT + nS;
@@ -649,7 +672,27 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
                         hits_sel.push_back(h);
                     }
                 }
+                if (getShowers)
+                {
+                    auto shws = pfp_to_showers->at(pfp.key());
+                    for (auto const& shw : shws)
+                    {
+                        if (shw.isNull()) continue;
+                        if (shw->Length() < trackLength) continue; // ou um corte separado
+
+                        anyGoodTrack = true; // (renomeia pra anyGoodObj se quiser)
+                        auto shwHits = fmHitsShower->at(shw.key());
+
+                        for (auto const& h : shwHits)
+                        {
+                            if (h.isNull()) continue;
+                            if (!seen.insert(h.key()).second) continue;
+                            hits_sel.push_back(h);
+                        }
+                    }
+                }
             }
+          
             if (!anyGoodTrack) continue;
             if (hits_sel.empty()) continue;
 

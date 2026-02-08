@@ -78,6 +78,43 @@ cet_build_plugin(GetMyWireData art::module
     ROOT::Tree
 )
 
+cet_build_plugin(GetWfHitsAnalyzer art::module
+  LIBRARIES
+    larcorealg::Geometry
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    art::Framework_Core
+    art::Framework_Principal
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+)
+
+cet_build_plugin(getVis art::module
+  LIBRARIES
+    larcorealg::Geometry
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    art::Framework_Core
+    art::Framework_Principal
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+    larcore::Geometry_Geometry_service
+    larsim::PhotonPropagation
+    larsim::PhotonPropagation_PhotonVisibilityService_service 
+)
+
 install_headers()
 install_fhicl()
 install_source()

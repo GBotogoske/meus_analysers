@@ -6,6 +6,8 @@
 #include "art/Framework/Core/EDAnalyzer.h"
 #include "art/Framework/Core/ModuleMacros.h"
 #include "art/Framework/Principal/Event.h"
+#include "art/Framework/Principal/Handle.h"
+#include "canvas/Utilities/InputTag.h"
 
 #include "canvas/Persistency/Common/Ptr.h"
 #include "canvas/Persistency/Common/FindManyP.h"
@@ -19,7 +21,6 @@
 #include "lardataobj/RecoBase/Hit.h"
 #include "lardataobj/RecoBase/OpHit.h"
 #include "lardataobj/RecoBase/SpacePoint.h"
-
 
 #include "larcore/Geometry/Geometry.h"
 #include "larcore/CoreUtils/ServiceUtil.h"
@@ -52,6 +53,8 @@
 #include "mydune/utils/my_utils.hh"
 #include "mydune/utils/MyMatch.hh"
 
+#include <optional>
+
 class MyFlashMatching : public art::EDAnalyzer
  {
     public:
@@ -67,6 +70,7 @@ class MyFlashMatching : public art::EDAnalyzer
         art::InputTag fTrackLabel;
         art::InputTag fShowerLabel;
         art::InputTag fCaloLabel;
+        art::InputTag fCaloShowerLabel;
         art::InputTag fFlashLabel;
         art::InputTag fHitLabel;
 
@@ -81,6 +85,7 @@ class MyFlashMatching : public art::EDAnalyzer
         int pfpID;
         int nPFPs;
         int nTracksPFP;
+        int nShowersPFP;
         int trackID;
         std::vector<float> v_dEdx;
         std::vector<float> v_dQdx;
@@ -95,11 +100,14 @@ class MyFlashMatching : public art::EDAnalyzer
         double drift_speed;
         double electronlife;
         double W_LAr;
+        double density;
+        double Efield;
 
         int nOPdet;
 
         void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId, int const& typeObj );
-        void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj );
+        //void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj );
+        void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj );
 
         std::vector<QCluster> getQClustersSlices(art::Event const& e); // esse aqui eh por slice
         std::vector<QCluster> getQClustersPFPs(art::Event const& e); // esse aqui eh por slice
@@ -113,11 +121,15 @@ class MyFlashMatching : public art::EDAnalyzer
         bool getShowers = false;
         std::string ClusterType; //Slice,PFP,Track
         std::string DetectorZone; //Positive,Negative,All
+        std::string type_order;
 
         int fflashID,fclusterID,fclusterTrivialID, fclusterType,fclusterTypeTrivial;
         double fflashTime;
         double fScore,fxoffset;
         double fScoreTrivial,fxoffsetTrivial;
+        int fflashIDTrivial;
+        double fflashTimeTrivial;
+        double fdeltat0Trivial, fdeltat0;
 
         double limitMinFlash = 0 ;
         double limitMinFlashSide = 0;
@@ -135,12 +147,14 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
     fTrackLabel = p.get<art::InputTag>("TrackLabel");
     fShowerLabel = p.get<art::InputTag>("ShowerLabel");
     fCaloLabel = p.get<art::InputTag>("CalorimetryLabel");
+    fCaloShowerLabel = p.get<art::InputTag>("CalorimetryShowerLabel");
     fFlashLabel = p.get<art::InputTag>("FlashLabel");
     fHitLabel = p.get<art::InputTag>("HitLabel");
 
     norm = p.get<bool>("NormFlash",false);
     ClusterType=p.get<std::string>("ClusterType","Track");
     DetectorZone=p.get<std::string>("DetectorZone","All");
+    type_order=p.get<std::string>("type_order","flash");
 
     limitMinFlash = p.get<double>("limitMinFlash",0.0);
     limitMinFlashSide = p.get<double>("limitMinFlashSide",0.0);
@@ -151,9 +165,19 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
         std::cout << "Normalizing the flash!!! " << std::endl;
     else
         std::cout << "Not Normalizing the flash!!! " << std::endl;
+
     std::cout << "Track Lenght min: " << trackLength << std::endl;
     std::cout << "limitMinFlash: " << limitMinFlash << std::endl;
     std::cout << "limitMinFlashSide: " << limitMinFlashSide << std::endl;
+
+    getShowers = p.get<bool>("getShowers",false);
+    if(getShowers)
+        std::cout << "Getting Showers!!! " << std::endl;
+    else
+        std::cout << "Not Getting Showers!!! " << std::endl;
+
+    std::cout << "type_order: " << type_order<< std::endl;
+
 
     _cal_area_const    = p.get<std::vector<float>>("CalAreaConstants"); // PEGANDO OS VALORES PADRAO, TA CERTO??
 
@@ -190,28 +214,6 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
                 p.get<bool>("do_include_anode_refl", false),
                 p.get<bool>("do_include_xe_absorption", false)
                 ); 
-
-    getShowers = p.get<bool>("getShowers",false);
-
-    /*
-   for (unsigned int ch = 0; ch < fPVS->NOpChannels(); ch++)
-    {
-        auto const& detGeo = geo->OpDetGeoFromOpDet(ch);
-        auto const& pos = detGeo.GetCenter();
-
-        std::cout << "CH " << ch
-                << " at (" << pos.X()
-                << ", " << pos.Y()
-                << ", " << pos.Z() << ")\n";
-    }
-
-    geo::Point_t p1{300.0, 0.0, 100.0};
-    for (unsigned int ch = 0; ch < fPVS->NOpChannels(); ch++) 
-    {
-        float vis = fPVS->GetVisibility(p1, ch);
-        if (vis > 0) std::cout << "Channel " << ch << " sees vis = " << vis << std::endl;
-        else std::cout << "Channel " << ch << " sees vis (-1) = " << vis << std::endl;
-    } */  
     
 }
 
@@ -222,18 +224,31 @@ void MyFlashMatching::beginJob()
     fTreeF = tfs->make<TTree>("treeMatch", "Flash Match with likelihood fit using poisson and Hungarian algorithm to assing  light to charge");
     fTreeF->Branch("run", &run);
     fTreeF->Branch("event", &event);
-    fTreeF->Branch("clusterID", &fclusterID);
-    fTreeF->Branch("clusterType", &fclusterType);
-    fTreeF->Branch("clusterType_trivial", &fclusterTypeTrivial);
-    fTreeF->Branch("clusterID_trivial", &fclusterTrivialID);
-    fTreeF->Branch("flashID", &fflashID);
-    fTreeF->Branch("flashTime", &fflashTime);
+    if(type_order=="flash")
+    {
+        fTreeF->Branch("clusterID", &fclusterID);
+        fTreeF->Branch("clusterType", &fclusterType);
+        fTreeF->Branch("clusterType_trivial", &fclusterTypeTrivial);
+        fTreeF->Branch("clusterID_trivial", &fclusterTrivialID);
+        fTreeF->Branch("flashID", &fflashID);
+        fTreeF->Branch("flashTime", &fflashTime); 
+    }
+    if(type_order=="track")
+    {
+        fTreeF->Branch("clusterID", &fclusterID);
+        fTreeF->Branch("clusterType", &fclusterType);
+        fTreeF->Branch("flashID", &fflashID);
+        fTreeF->Branch("flashTime", &fflashTime);
+        fTreeF->Branch("flashID_trivial", &fflashIDTrivial);
+        fTreeF->Branch("flashTime_trivial", &fflashTimeTrivial);
+    }
     fTreeF->Branch("score", &fScore);
     fTreeF->Branch("x", &fxoffset);
     fTreeF->Branch("score_trivial", &fScoreTrivial);
-    fTreeF->Branch("x_trivial", &fxoffsetTrivial);
+    fTreeF->Branch("x_trivial", &fxoffsetTrivial);   
+    fTreeF->Branch("deltat0_trivial", &fdeltat0Trivial);
+    fTreeF->Branch("deltat0", &fdeltat0);   
 
-    
 }
 
 void MyFlashMatching::analyze(art::Event const& e)
@@ -260,7 +275,6 @@ void MyFlashMatching::analyze(art::Event const& e)
             << "  Drift dir: (" << dir.X() << ", " << dir.Y() << ", " << dir.Z() << ")  L=" << L << " cm\n";
         } */
 
-
     run    = e.id().run();
     event  = e.id().event();
 
@@ -271,10 +285,14 @@ void MyFlashMatching::analyze(art::Event const& e)
     drift_speed = det_prop.DriftVelocity(); //~ 0.15 cm/us
     electronlife = det_prop.ElectronLifetime(); //35000 us
     W_LAr=g4param->Wph(); //19.5 eV
+    this->density = det_prop.Density();
+    this->Efield = det_prop.Efield();
 
     std::cout << "electron vd := " << drift_speed << std::endl;
     std::cout << "electron lifetime:=  " << electronlife << std::endl;
-    std::cout << "W LAr:=  " << W_LAr << std::endl;
+    std::cout << "W LAr :=  " << W_LAr << std::endl;
+    std::cout << "Density :=  " << density << std::endl;
+    std::cout << "Efield :=  " << Efield << std::endl;
 
     std::vector<QCluster> QClusters;
     
@@ -287,66 +305,265 @@ void MyFlashMatching::analyze(art::Event const& e)
     std::cout <<"Final number Qcluster: " << QClusters.size() << std::endl;
     std::cout <<"Final number Flashs: " << QFlashs.size() << std::endl;
 
-    myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed,fPVS,fSAM,norm,DetectorZone);
+    myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed,electronlife,density,Efield,fPVS,fSAM,norm,DetectorZone,type_order);
     std::cout << "pudim" << std::endl;
 
     auto& HR = match_operator->HR;
     auto& MYScore = match_operator->MYScore;
     auto& MYOffset = match_operator->MYOffset;
+    auto& MYdeltaT0 = match_operator->MYdeltaT0;
 
     auto& qqs = QClusters;
     auto& qfs = QFlashs;
-    const int nRows = std::min((int)HR.assign.size(), match_operator->Nf);
 
-    const bool haveClusters = (!QClusters.empty() && match_operator->Nc > 0);
-    for (int nf = 0; nf < nRows; ++nf) 
+    if(type_order=="flash")
     {
-        
-        fflashID = qfs[nf].flashID;
-        fflashTime = qfs[nf].time;
+        const int nRows = std::min((int)HR.assign.size(), match_operator->Nf);
 
-        if (haveClusters && (int)MYScore[nf].size() >= match_operator->Nc) 
+        const bool haveClusters = (!QClusters.empty() && match_operator->Nc > 0);
+        for (int nf = 0; nf < nRows; ++nf) 
         {
-            auto const& row = MYScore[nf];
-            auto it = std::min_element(row.begin(), row.begin() + match_operator->Nc); // só clusters reais
-            int ncTrivial = (int)std::distance(row.begin(), it);
-            fclusterTrivialID = qqs[ncTrivial].objID; 
-            fScoreTrivial = MYScore[nf][ncTrivial];
-            fxoffsetTrivial = MYOffset[nf][ncTrivial];
-            fclusterTypeTrivial = qqs[ncTrivial].type; 
-        }
-        else 
-        {
-            fclusterTrivialID = -1;
-            fScoreTrivial     = -1000;
-            fxoffsetTrivial   = 0.0;
-            fclusterTypeTrivial = -1;
-        }
-        // se caiu em dummy
+            
+            fflashID = qfs[nf].flashID;
+            fflashTime = qfs[nf].time;
 
-        const int nc = HR.assign[nf];
-        if (!haveClusters || nc < 0 || nc >= match_operator->Nc)
-        {
-            fclusterID = -1;
-            fScore     = -1000;
-            fxoffset   = 0.0;
-            fclusterType = -1;
-        } 
-        else
-        {
-            fclusterID = qqs[nc].objID;
-            fScore     = MYScore[nf][nc];
-            fxoffset   = MYOffset[nf][nc];
-            fclusterType = qqs[nc].type;
+            if (haveClusters && (int)MYScore[nf].size() >= match_operator->Nc) 
+            {
+                auto const& row = MYScore[nf];
+                auto it = std::min_element(row.begin(), row.begin() + match_operator->Nc); // só clusters reais
+                int ncTrivial = (int)std::distance(row.begin(), it);
+                fclusterTrivialID = qqs[ncTrivial].objID; 
+                fScoreTrivial = MYScore[nf][ncTrivial];
+                fxoffsetTrivial = MYOffset[nf][ncTrivial];
+                fclusterTypeTrivial = qqs[ncTrivial].type; 
+                fdeltat0Trivial = MYdeltaT0[nf][ncTrivial];
+            }
+            else 
+            {
+                fclusterTrivialID = -1;
+                fScoreTrivial     = 1e6;
+                fxoffsetTrivial   = -1e6;
+                fclusterTypeTrivial = -1;
+                fdeltat0Trivial = -1e6;
+            }
+            // se caiu em dummy
+
+            const int nc = HR.assign[nf];
+            if (!haveClusters || nc < 0 || nc >= match_operator->Nc)
+            {
+                fclusterID = -1;
+                fScore     = 1e6;
+                fxoffset   = -1e6;
+                fclusterType = -1;
+                fdeltat0 = -1e6;
+
+            } 
+            else
+            {
+                fclusterID = qqs[nc].objID;
+                fScore     = MYScore[nf][nc];
+                fxoffset   = MYOffset[nf][nc];
+                fclusterType = qqs[nc].type;
+                fdeltat0 = MYdeltaT0[nf][nc];
+            }
+            fTreeF->Fill();
         }
-        fTreeF->Fill();
     }
+    else if(type_order=="track")
+    {
+        const int Nc = match_operator->Nc;
+        const int Nf = match_operator->Nf;
+
+        const int nRows = std::min((int)HR.assign.size(), Nc);
+        const bool haveFlashes = (Nf > 0 && !qfs.empty());
+
+        for (int nc = 0; nc < nRows; ++nc)
+        {
+            // info do cluster (sempre existe aqui)
+            fclusterID   = qqs[nc].objID;
+            fclusterType = qqs[nc].type;
+
+            // ------------------------
+            // TRIVIAL: melhor FLASH p/ esse cluster (mínimo na linha nc)
+            // ------------------------
+            
+            if (haveFlashes && (int)MYScore[nc].size() >= Nf)
+            {
+                auto const& row = MYScore[nc]; // size Nf
+                auto it = std::min_element(row.begin(), row.begin() + Nf);
+                int nfTrivial = (int)std::distance(row.begin(), it);
+
+                fflashIDTrivial   = qfs[nfTrivial].flashID;
+                fflashTimeTrivial = qfs[nfTrivial].time;
+
+                fScoreTrivial   = MYScore[nc][nfTrivial];
+                fxoffsetTrivial = MYOffset[nc][nfTrivial];
+                fdeltat0Trivial = MYdeltaT0[nc][nfTrivial];
+            }
+            else
+            {
+                fflashIDTrivial   = -1;
+                fflashTimeTrivial = -9e6;
+                fScoreTrivial     = 1e6;
+                fxoffsetTrivial   = -5000.0;
+                fdeltat0Trivial = -1e6;
+            }
+
+            // ------------------------
+            // HUNGARIAN: flash atribuído ao cluster
+            // ------------------------
+            const int nf = HR.assign[nc]; // agora assign[row=cluster] = col=flash
+
+            if (!haveFlashes || nf < 0 || nf >= Nf)
+            {
+                fflashID   = -1;
+                fflashTime = -9e6;
+                fScore     = 1e6;
+                fxoffset   = -5000.0;
+                fdeltat0 = -1e6;
+            }
+            else
+            {
+                fflashID   = qfs[nf].flashID;
+                fflashTime = qfs[nf].time;
+
+                fScore   = MYScore[nc][nf];
+                fxoffset = MYOffset[nc][nf];
+                fdeltat0 = MYdeltaT0[nc][nf];
+            }
+
+            fTreeF->Fill();
+        }
+    }
+
+   
     delete match_operator;
 }
 
 void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId,int const& typeObj )
 {
     std::vector<art::Ptr<anab::Calorimetry>> calos = trk_to_calo.at(trk.key());
+    //vetores para salvar as informacoes
+    v_dEdx.clear();
+    v_dQdx.clear();
+    v_pitch.clear();
+    v_x.clear();
+    v_y.clear();
+    v_z.clear();
+
+    //No codigo original tem uma secao de verificar o a posicao do track e se cruzou o plano de fios, e se o track eh uncontained
+    //------------------------------------------------------------------------------------
+    //############### BLA BLA BLA BLA BLA BLA ############################
+    //------------------------------------------------------------------------------------
+
+
+    // ---------------------------------------------------------------------------------------------
+    //sao 3 planos --> Determinar o melhor plano para fazer a associaco com os flashs
+
+    std::vector<art::Ptr<anab::Calorimetry>> calo_plane(3, art::Ptr<anab::Calorimetry>());
+    for (auto const& calo : calos)
+    {
+        int plane = calo->PlaneID().Plane;
+        if (plane < 0 || plane > 2) {
+            //std::cout << "Calo inválido (plane = " << plane << ")" << std::endl;
+            continue;
+        }
+
+        calo_plane[plane] = calo;
+    }
+    int bestPlane = -1;
+    size_t maxSize = 0;
+    int ob_APA=0;
+
+    for (int pl = 0; pl < 3; ++pl)
+    {
+        if (calo_plane[pl].isNull()) continue;
+        size_t nhits = calo_plane[pl]->dEdx().size();
+
+        if (nhits > maxSize)
+        {
+            maxSize = nhits;
+            bestPlane = pl;
+        }
+    }
+    if (bestPlane < 0) 
+    {
+        std::cout << "Track sem calorimetria válida em nenhum plano." << std::endl;
+        return;
+    }
+
+    int plane = bestPlane;
+    //for (int plane = 0; plane < 3; ++plane){
+    auto const& calo = calo_plane[plane];
+    if (calo.isNull())
+    {
+        std::cout << "Plano " << plane << " não tem calorimetria." << std::endl;
+        return;
+    }
+    ob_APA= calo->PlaneID().TPC;
+    
+    if(ob_APA != 1 && ob_APA != 2 && ob_APA != 5 && ob_APA != 6) return;
+    //------------------------- termino de buscar o plano -------------------------------------------------------------------
+    
+    auto const& dEdx_v  = calo->dEdx();
+    auto const& dADCdx_v = calo->dQdx();
+    auto const& pitch_v = calo->TrkPitchVec();
+    auto const& pos_v   = calo->XYZ();
+
+    // create vector of e- instead of ADC units
+    std::vector<float> dQdx_v(dADCdx_v.size(),0);
+    for (size_t s = 0; s < dADCdx_v.size(); s++)
+    {
+        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
+    }
+
+    //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
+    //varre todas as posicoes/energia depositadas
+    for (size_t s = 0; s < dEdx_v.size(); s++)
+    {
+        float x = pos_v[s].X();
+        float y = pos_v[s].Y();
+        float z = pos_v[s].Z();
+
+        if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
+        {
+            continue;
+        }
+        else if(DetectorZone == "Negative" && x>0) // so pegar as posicoes com x negativo
+        {
+            continue;
+        }  
+        //double drift_time = (drift_length - abs(x))/(drift_speed); //
+        //double atten_corr = std::exp(drift_time/electronlife); //
+
+        float pitch;
+        float dQ;//, dE;
+        //float nphotons;
+
+        //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
+        if(true)//valores normais (depois tenho que fazer o outro caso)
+        {
+            pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
+            dQ = dQdx_v[s] ; // * pitch * atten_corr; // corigido pelo drift
+            /* dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
+            nphotons = dE/(W_LAr*1e-6) - dQ;
+            nphotons = std::max(0.0f, nphotons); */    
+        }
+        else
+        {
+            //aqui depois colocamos os valores estranhos
+        }
+        this_qlight.push_back(QPoint(x,y,z,dQ,pitch));
+        //this_qlight.push_back(QPoint(x,y,z,nphotons));
+    }
+    this_qlight.objID = thisId;
+    this_qlight.type = typeObj;
+    this_qlight.APA = ob_APA;
+}
+
+void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj )
+{
+    std::vector<art::Ptr<anab::Calorimetry>> calos = shw_to_calo.at(shw.key());
     //vetores para salvar as informacoes
     v_dEdx.clear();
     v_dQdx.clear();
@@ -379,6 +596,7 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
     
     int bestPlane = -1;
     size_t maxSize = 0;
+    int ob_APA=0;
 
     for (int pl = 0; pl < 3; ++pl)
     {
@@ -401,12 +619,13 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
     //for (int plane = 0; plane < 3; ++plane){
 
     auto const& calo = calo_plane[plane];
-    
     if (calo.isNull())
     {
         std::cout << "Plano " << plane << " não tem calorimetria." << std::endl;
         return;
     }
+    ob_APA= calo->PlaneID().TPC;
+    if(ob_APA != 1 && ob_APA != 2 && ob_APA != 5 && ob_APA != 6) return;
     //------------------------- termino de buscar o plano -------------------------------------------------------------------
     
     auto const& dEdx_v  = calo->dEdx();
@@ -420,8 +639,6 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
     {
         dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
     }
-
-    //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
 
     //varre todas as posicoes/energia depositadas
     for (size_t s = 0; s < dEdx_v.size(); s++)
@@ -437,92 +654,41 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
         {
             continue;
         }  
-        double drift_time = (drift_length - abs(x))/(drift_speed); //
-        double atten_corr = std::exp(drift_time/electronlife); //
+        //double drift_time = (drift_length - abs(x))/(drift_speed); //
+        //double atten_corr = std::exp(drift_time/electronlife); //
 
         float pitch;
-        float dE,dQ;
-        float nphotons;
+        float dQ;//, dE;
+        //float nphotons;
 
         //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
         if(true)//valores normais (depois tenho que fazer o outro caso)
         {
             pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
-            dQ = dQdx_v[s] * pitch * atten_corr; // corigido pelo drift
-            dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
+            dQ = dQdx_v[s] ;// * pitch * atten_corr; // corigido pelo drift
+            /* dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
             nphotons = dE/(W_LAr*1e-6) - dQ;
+            nphotons = std::max(0.0f, nphotons); */
             
         }
         else
         {
             //aqui depois colocamos os valores estranhos
         }
-
-        this_qlight.push_back(QPoint(x,y,z,nphotons));
-    }
-    this_qlight.objID = thisId;
-    this_qlight.type = typeObj;
-}
-
-void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj )
-{
-    auto hits_sw = shw_to_hit.at(shw.key());
-    int bestPlane = shw->best_plane();
-
-    int nhit0_shw=0; int nhit1_shw=0; int nhit2_shw=0;
-    for (size_t n_hit=0; n_hit<hits_sw.size(); n_hit++)
-    {
-        auto hit = hits_sw[n_hit];
-        if (hit->View() == 0 ) nhit0_shw++;
-        if (hit->View() == 1 ) nhit1_shw++;
-        if (hit->View() == 2 ) nhit2_shw++;
-    }
-    const int maxHits = std::max({ nhit0_shw, nhit1_shw, nhit2_shw});
-    bestPlane = ((nhit2_shw == maxHits) ? 2 : (nhit1_shw == maxHits) ? 1 : (nhit0_shw == maxHits) ? 0 : -1);
-
-    for (size_t n_hit = 0; n_hit < hits_sw.size(); n_hit++) 
-    {
-        auto hit = hits_sw[n_hit];
-        if (hit->View() != bestPlane) continue;
-        auto sp = hit_to_sp.at(hit.key());
+        this_qlight.push_back(QPoint(x,y,z,dQ,pitch));
+        //this_qlight.push_back(QPoint(x,y,z,nphotons));
         
-        if (sp.size() == 0) continue;
-
-        double const* pos_v = sp[0]->XYZ();
-        float x = pos_v[0];
-        float y = pos_v[1];
-        float z = pos_v[2];
-
-        if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
-        {
-            continue;
-        }
-        else if(DetectorZone == "Negative" && x>0) // so pegar as posicoes com x negativo
-        {
-            continue;
-        }  
-        double drift_time = (drift_length - abs(x))/(drift_speed); //
-        double atten_corr = std::exp(drift_time/electronlife); //
-
-        const auto charge((1/_cal_area_const.at(bestPlane))*hit->Integral()*atten_corr);
-        double nphotons = 0;
-        double _shower_to_photons = 1.0;
-        nphotons = charge*_shower_to_photons;
-
-        this_qlight.push_back(QPoint(x,y,z,nphotons));
     }
     this_qlight.objID = thisId;
     this_qlight.type = typeObj;
-            
+    this_qlight.APA = ob_APA;
 }
-
 
 //eu vi que para cosmics eh melhor fazer match diretamente com track/PFParticle em vez de slices ( muito quebrado para cosmics )
 
 std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
 {
-   
-    // pegar produtos importantes
+     // pegar produtos importantes
     auto slice_h = e.getValidHandle<std::vector<recob::Slice>>(fSliceLabel); // SLICE
     auto pfp_h = e.getValidHandle<std::vector<recob::PFParticle>>(fPFPLabel); //PFParticles
     auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel); // tracks
@@ -531,6 +697,23 @@ std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
     art::FindManyP<recob::PFParticle> slice_to_pfps(slice_h, e, fSliceLabel); //pega a associacao de PFParticles nos slices
     art::FindManyP<recob::Track> pfp_to_tracks(pfp_h, e, fTrackLabel); // pega a associacao de tracks das PFParticles
     art::FindManyP<anab::Calorimetry> trk_to_calo(track_h, e, fCaloLabel); // pega as info de calorimetria dos tracks
+
+    art::Handle<std::vector<recob::Shower>> shower_h;
+    //art::Handle<std::vector<recob::Hit>> hit_h; 
+    std::optional<art::FindManyP<recob::Shower>> pfp_to_showers;
+    std::optional<art::FindManyP<anab::Calorimetry>> shw_to_calo;
+    //std::optional<art::FindManyP<recob::Hit>> shower_to_hits ;
+    //std::optional<art::FindManyP<recob::SpacePoint>> hit_to_sps ;
+
+    if(getShowers)
+    {
+        shower_h = e.getHandle<std::vector<recob::Shower>>(fShowerLabel);
+        //hit_h = e.getHandle<std::vector<recob::Hit>>(fHitLabel);
+        pfp_to_showers.emplace(pfp_h, e, fShowerLabel);
+        //shower_to_hits.emplace(shower_h, e, fShowerLabel);
+        //hit_to_sps.emplace(hit_h, e, fHitLabel);
+        shw_to_calo.emplace(shower_h,e,fCaloShowerLabel);
+    } 
 
     //numero de slices
     nSlices = slice_h->size();
@@ -576,9 +759,28 @@ std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
                     returnQCluster(this_qlight,trk,trk_to_calo,sl->ID(),3); 
                 }
             }
+            if(getShowers)
+            {
+                std::vector<art::Ptr<recob::Shower>> showers = pfp_to_showers->at(pfp.key());
+                nShowersPFP = showers.size();
+                for (auto const& shw : showers)
+                {
+                    //trackID = trk->ID(); //ID do track
+                    //pega as info de calorimetria
+                    if(shw->Length() >= trackLength)
+                    {
+                        //returnQClusterShower(this_qlight,trk,trk_to_calo,sl->ID(),3); 
+                        //returnQClusterShower(this_qlight,shw,*shower_to_hits,*hit_to_sps,sl->ID(),3); 
+                        returnQClusterShower(this_qlight,shw,*shw_to_calo,sl->ID(),3);    
+                    }
+                }
+            }
+            
+
         }
         if(this_qlight.size()>0)
         {
+            this_qlight.APA=-1;
             QLigths.push_back(this_qlight);
         }  
     }
@@ -637,6 +839,9 @@ std::vector<QCluster> MyFlashMatching::getQClustersTracks(art::Event const& e)
     auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel); // tracks
     auto calo_h = e.getValidHandle<std::vector<anab::Calorimetry>>(fCaloLabel); //calorimetria
 
+    auto const clock_data = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
+    auto const det_prop   = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(e, clock_data);
+
     art::FindManyP<anab::Calorimetry> trk_to_calo(track_h, e, fCaloLabel); // pega as info de calorimetria dos tracks
 
     std::vector<QCluster> QLigths;
@@ -646,11 +851,43 @@ std::vector<QCluster> MyFlashMatching::getQClustersTracks(art::Event const& e)
     art::fill_ptr_vector(tracks, track_h);
     auto nTracks = tracks.size();
 
+    art::FindManyP<recob::Hit> fmHits(track_h, e, fTrackLabel);
+    if (!fmHits.isValid()) 
+    {
+      mf::LogWarning("GetMyWireData") << "No Track<->Hit assns for " << fTrackLabel << std::endl;  
+    }
+
     std::cout << "N TRACKS: " << nTracks << std::endl; 
     //varre todos tracks deste PFParticle
     for (auto const& trk : tracks)
     {
         QCluster this_qlight;
+        auto hits = fmHits.at(trk.key());
+        double xmint =  100000;
+        double xmaxt = -100000;
+       
+        geo::WireID wid;
+        for (auto const& h : hits) 
+        {
+            if (h.isNull()) continue;
+
+            wid = h->WireID();
+
+            // X do TPC *no mesmo frame do reco*
+            auto TPC = wid.TPC;
+            if(TPC==0 || TPC==3 || TPC==4 || TPC==7) continue;
+            double x_hit = det_prop.ConvertTicksToX(h->PeakTime(), wid.Plane, wid.TPC, wid.Cryostat);
+
+            xmint = std::min(xmint, x_hit);
+            xmaxt = std::max(xmaxt, x_hit);
+        }
+
+        if(xmint==100000) continue;
+        if(xmaxt==-100000) continue;
+
+        //std::cout << det_prop.ConvertTicksToX(0, wid.Plane, 2, wid.Cryostat) << "   " << det_prop.ConvertTicksToX(5999, wid.Plane, 2, wid.Cryostat) << std::endl;
+        //std::cout << det_prop.ConvertTicksToX(0, wid.Plane, 1, wid.Cryostat) << "   " << det_prop.ConvertTicksToX(5999, wid.Plane, 1, wid.Cryostat) << std::endl;
+
         if(trk->Length() >= trackLength)
         {
             returnQCluster(this_qlight,trk,trk_to_calo,trk->ID(),0); 
@@ -659,31 +896,59 @@ std::vector<QCluster> MyFlashMatching::getQClustersTracks(art::Event const& e)
         if(this_qlight.size()>0)
         {
             QLigths.push_back(this_qlight);
-        }  
-    }
-
-    auto shower_h = e.getValidHandle<std::vector<recob::Shower>>(fShowerLabel); // shower
-    auto hit_h = e.getValidHandle<std::vector<recob::Hit>>(fHitLabel);
-    art::FindManyP<recob::Hit> shower_to_hits (shower_h, e, fShowerLabel);
-    art::FindManyP<recob::SpacePoint> hit_to_sps(hit_h, e, fHitLabel);
-    if (!hit_to_sps.isValid()) 
-    {
-        mf::LogWarning("MyFlashMatching") << "FindManyP Hit->SpacePoint INVALID. Label errado/assns nao existem.";
+        }
+        
     }
 
     if(getShowers)
     {
+        auto shower_h = e.getValidHandle<std::vector<recob::Shower>>(fShowerLabel);
+        auto calo_sh_h = e.getValidHandle<std::vector<anab::Calorimetry>>(fCaloShowerLabel); // shower
+        art::FindManyP<anab::Calorimetry> shw_to_calo(shower_h, e, fCaloShowerLabel);
+        //auto hit_h = e.getValidHandle<std::vector<recob::Hit>>(fHitLabel);
+        //art::FindManyP<recob::Hit> shower_to_hits (shower_h, e, fShowerLabel);
+        //art::FindManyP<recob::SpacePoint> hit_to_sps(hit_h, e, fHitLabel);
+        
+
+        art::FindManyP<recob::Hit> fmHits(shower_h, e, fShowerLabel);
+        if (!fmHits.isValid()) 
+        {
+            mf::LogWarning("GetMyWireData") << "No Track<->Hit assns for " << fShowerLabel << std::endl;  
+        }
+    
         std::vector<art::Ptr<recob::Shower>> showers;
         art::fill_ptr_vector(showers, shower_h);
         auto nShowers = showers.size();
 
         std::cout << "N SHOWERS: " << nShowers << std::endl; 
         for (auto const& shw : showers)
-        {
+        {   
+            double xmint =  100000;
+            double xmaxt = -100000;
+            auto hits = fmHits.at(shw.key());
+            for (auto const& h : hits) 
+            {
+                if (h.isNull()) continue;
+                auto const wid = h->WireID();
+
+                // X do TPC *no mesmo frame do reco*
+                auto TPC = wid.TPC;
+                if(TPC==0 || TPC==3 || TPC==4 || TPC==7) continue;
+                double x_hit = det_prop.ConvertTicksToX(h->PeakTime(), wid.Plane, wid.TPC, wid.Cryostat);
+
+                xmint = std::min(xmint, x_hit);
+                xmaxt = std::max(xmaxt, x_hit);
+            }
+
+            //checa se tem pontos no volume ativo
+            if(xmint==100000) continue;
+            if(xmaxt==-100000) continue;
+               
             QCluster this_qlight;
             if(shw->Length() >= trackLength)
             {
-                returnQClusterShower(this_qlight,shw,shower_to_hits,hit_to_sps,shw->ID(),1); 
+                //returnQClusterShower(this_qlight,shw,shower_to_hits,hit_to_sps,shw->ID(),1); 
+                returnQClusterShower(this_qlight,shw,shw_to_calo,shw->ID(),1); 
             }
             
             if(this_qlight.size()>0)
