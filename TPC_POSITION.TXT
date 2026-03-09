@@ -1,0 +1,55 @@
+X>0          CATODO        X<0 
+               ||
+               ||
+               ||
+6              ||    5
+               ||
+               ||
+-------------------------------------
+               ||
+               ||
+               ||
+2              ||    1
+               ||
+               ||
+-------------------------------------     z cresce para cima
+
+
+1-> APA1
+2-> APA3
+5-> APA2
+6-> APA4
+
+
+Cryo 0  TPC 0
+  Cathode center (cm): (-364.253, 307.387, 115.236)
+  Anode   center (cm): (-361.789, 307.387, 115.236)
+  Drift dir: (1, 0, 0)  L=2.46375 cm
+Cryo 0  TPC 1
+  Cathode center (cm): (-0.2651, 307.387, 115.236)
+  Anode   center (cm): (-353.202, 307.387, 115.236)
+  Drift dir: (-1, -0, -0)  L=352.937 cm
+Cryo 0  TPC 2
+  Cathode center (cm): (0.0651, 307.387, 115.236)
+  Anode   center (cm): (353.002, 307.387, 115.236)
+  Drift dir: (1, 0, 0)  L=352.937 cm
+Cryo 0  TPC 3
+  Cathode center (cm): (364.053, 307.387, 115.236)
+  Anode   center (cm): (361.589, 307.387, 115.236)
+  Drift dir: (-1, -0, -0)  L=2.46375 cm
+Cryo 0  TPC 4
+  Cathode center (cm): (-364.253, 307.387, 347.296)
+  Anode   center (cm): (-361.789, 307.387, 347.296)
+  Drift dir: (1, 0, 0)  L=2.46375 cm
+Cryo 0  TPC 5
+  Cathode center (cm): (-0.2651, 307.387, 347.296)
+  Anode   center (cm): (-353.202, 307.387, 347.296)
+  Drift dir: (-1, -0, -0)  L=352.937 cm
+Cryo 0  TPC 6
+  Cathode center (cm): (0.0651, 307.387, 347.296)
+  Anode   center (cm): (353.002, 307.387, 347.296)
+  Drift dir: (1, 0, 0)  L=352.937 cm
+Cryo 0  TPC 7
+  Cathode center (cm): (364.053, 307.387, 347.296)
+  Anode   center (cm): (361.589, 307.387, 347.296)
+  Drift dir: (-1, -0, -0)  L=2.46375 cm
