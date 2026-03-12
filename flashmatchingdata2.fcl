@@ -1,0 +1,64 @@
+#include "services_refactored_pdune.fcl"
+#include "calorimetry_pdune.fcl"
+#include "PDFastSim_dune.fcl"
+#include "services_dune.fcl"
+#include "PhotonVisibilityExport.fcl"
+#include "duneopticalpath_tool.fcl"
+
+
+process_name: SliceProcess
+
+services: 
+{
+  TFileService:
+    {
+    fileName: "my_root.root"
+    }
+        @table::protodunehd_refactored_simulation_services
+        PhotonVisibilityService: @local::protodune_hd_v6_hybridModel_photonvisibilityservice
+}
+
+source:
+{
+  module_type: RootInput
+  fileNames: [ "input.root" ]
+}
+
+physics:
+{
+  analyzers:
+  {
+    waveAna: 
+    {
+        module_type: "MyFlashMatching"
+        SliceLabel: "pandora"
+        PFParticleLabel: "pandora"
+        TrackLabel: "pandoraTrack"
+        ShowerLabel: "pandoraShower"
+        CalorimetryLabel: "pandoracalo"
+        CalorimetryShowerLabel: "pandoraShowercalo"
+        FlashLabel: "opflash"
+        HitLabel: "hitpdune"
+        CalAreaConstants: @local::pdhd_calorimetryalgdata.CalAreaConstants
+        do_refl:                  false
+        do_include_anode_refl:    false
+        NormFlash: false
+        ClusterType: "Track" #Track,PFP,Slice
+        DetectorZone: "All" #Positive,Negative,All
+        limitMinFlash: 50.0
+        limitMinFlashSide: 20.0 
+        trackLengthMin: 30.0 #cm
+        getShowers: true
+        type_fit: "Track"
+        isMC: "false"
+        vuvhitspars:              @local::protodune_hd_vuv_hits_parameterization
+        vishitspars:              @local::dunefd_pdfastsim_par_ar_refl.VISHits
+        OpticalPathTool: @local::protodune_hd_pdfastsim_par.OpticalPathTool
+    }
+  }
+
+  path0 : [waveAna]
+  end_paths: [ path0 ]  
+}
+
+services.TFileService.fileName: "%ifb_FlashMatchingDataAnalyser2%ife"

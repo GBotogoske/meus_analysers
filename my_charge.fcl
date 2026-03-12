@@ -1,0 +1,170 @@
+# ================================================================
+#  ProtoDUNE-HD Track Reconstruction (clean version)
+#  Author: Gabriel (Batman)
+#  Description: Minimal and clean reconstruction chain for TPC tracks
+#               starting from detsim (no PDS, no CRT, no "pandora2")
+# ================================================================
+
+#include "opticaldetectormodules_dune.fcl"
+#include "Deconvolution.fcl"
+#include "OpHitFinderDeco.fcl"
+#include "OpSlicer.fcl"
+
+#include "t0reco.fcl"
+#include "pandoramodules_dune.fcl"
+#include "wirecell_dune.fcl"
+#include "particleid.fcl"
+
+#include "CRT.fcl"
+#include "T0RecoAnodePiercers.fcl"
+
+#include "numberofhitsfilter.fcl"
+#include "SpacePointSolver_dune.fcl"
+#include "featurelabelingmodules.fcl"
+#include "calorimetry_pdune.fcl"
+#include "calibration_dune.fcl"
+#include "hitfindermodules_dune.fcl"
+#include "PDHDFEMBFilter.fcl"
+
+#include "services_dune.fcl"
+#include "spacecharge_dune.fcl"
+#include "dune_calibanatree.fcl"
+
+process_name: myCharge
+
+# ------------------------------------------------
+# Services
+# ------------------------------------------------
+services:
+{
+  TFileService: { fileName: "reco_protodunehd_myCharge.root" }
+
+  TimeTracker:       @local::dune_time_tracker
+  MemoryTracker:     @local::dune_memory_tracker
+  RandomNumberGenerator: {}
+  message:           @local::dune_message_services_prod
+  FileCatalogMetadata:  @local::art_file_catalog_mc
+
+  @table::protodunehd_services
+
+  # Override SpaceCharge with the HD-specific one
+  SpaceCharge: @local::pdhd_spacecharge
+
+  IFDH: {}
+}
+
+# Geometry overrides (ProtoDUNE-HD)
+services.AuxDetGeometry.GDML: "protodunehd_v6_refactored.gdml"
+services.AuxDetGeometry.Name: "protodunehdv6"
+
+# BackTracker settings for MC truth association
+services.BackTrackerService.BackTracker.G4ModuleLabel: "largeant"
+services.BackTrackerService.BackTracker.SimChannelModuleLabel: "tpcrawdecoder:simpleSC"
+
+# ------------------------------------------------
+# Input file
+# ------------------------------------------------
+source:
+{
+  module_type: RootInput
+  maxEvents: -1
+  saveMemoryObjectThreshold: 0
+  fileNames: ["detsim_single_protodunehd.root"]
+}
+
+# ------------------------------------------------
+# Physics modules
+# ------------------------------------------------
+physics:
+{
+  # --- Optional filter to reject empty events
+  filters:
+  {
+    nhitsfilter: @local::pdhd_nhitsfilter
+  }
+
+  # --- Producers
+  producers:
+  {
+    # 1. TPC deconvolution
+    wclsdatahd:  @local::protodunehd_nfsp
+
+    # 2. Hit finder (from wires)
+    gaushit:     @local::protodunespmc_gaushitfinder
+
+    # 4. 3D space point reconstruction
+    reco3d:      @local::pdhd_mc_spacepointsolver
+
+    # 3. Hit disambiguation (resolve overlapping wires)
+    hitpdune:    @local::pdune_disambigfromsp
+
+    # 5. Pandora reconstruction
+    pandora:         @local::protodunehd_pandora
+    pandoraTrack:    @local::dune_pandoraTrackCreation
+    pandoraShower:   @local::dune_pandoraShowerCreation
+
+    # 6. Calorimetry and PID
+    pandoracalo:        @local::pdhd_calomcsce
+    pandoracalonosce:   @local::pdhd_calomcnosce
+    pandorapid:         @local::standard_chi2pid
+    pandoraShowercalo:       @local::pdhd_showercalomcsce
+    pandoraShowercalonosce:  @local::pdhd_showercalomcnosce
+
+    # 7. Michel tagging (optional)
+    emtrkmichelid:      @local::pdhd_mc_emtrkmichelid
+  }
+
+  # --- Execution order
+  reco: [
+    wclsdatahd,
+    gaushit,
+    nhitsfilter,
+    reco3d,
+    hitpdune,
+    pandora,
+    pandoraTrack,
+    pandoraShower,
+    pandoracalo,
+    pandoracalonosce,
+    pandorapid,
+    pandoraShowercalo,
+    pandoraShowercalonosce,
+    emtrkmichelid
+  ]
+
+  output: [ out1 ]
+  trigger_paths: [ reco ]
+  end_paths: [ output ]
+}
+
+# ------------------------------------------------
+# Output settings
+# ------------------------------------------------
+outputs:
+{
+  out1:
+  {
+    module_type: RootOutput
+    fileName:    "%ifb_pandora_reco.root"
+    dataTier:    "full-reconstructed"
+    outputCommands: [
+      "keep *"
+    ]
+    compressionLevel: 1
+    fastCloning: true
+  }
+}
+
+# ------------------------------------------------
+# Parameter tuning / labels
+# ------------------------------------------------
+physics.producers.gaushit.CalDataModuleLabel: "wclsdatahd:gauss"
+physics.producers.pandora.HitFinderModuleLabel:             "hitpdune"
+physics.producers.pandora.GeantModuleLabel:                 "tpcrawdecoder:simpleSC"
+physics.producers.pandoraTrack.PFParticleLabel:             "pandora"
+physics.producers.pandoraShower.PFParticleLabel:            "pandora"
+physics.producers.pandorapid.CalorimetryModuleLabel:        "pandoracalo"
+physics.producers.pandorapid.TrackModuleLabel:              "pandoraTrack"
+
+# For deconvolution module: specify we're running on simulation
+physics.producers.wclsdatahd.wcls_main.params.reality: sim

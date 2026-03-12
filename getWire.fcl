@@ -1,0 +1,39 @@
+#include "services_refactored_pdune.fcl"
+
+process_name: WireProcess
+
+services: {
+  TFileService: {
+    fileName: "my_waveforms_mc.root"
+  }
+        @table::protodunehd_refactored_simulation_services
+        DetectorClocksService:        @local::protodunehd_detectorclocks
+}
+
+source:
+{
+  module_type: RootInput
+  fileNames: [ "input.root" ]
+}
+
+physics:
+{
+  analyzers:
+  {
+    waveAna: 
+    {
+        module_type: GetMyWireData
+        ClusterType: "Track"
+        getShowers: true
+        TrackLabel:  "pandoraTrack"
+        ShowerLabel: "pandoraShower"
+        SliceLabel:  "pandora"
+        PFParticleLabel: "pandora"
+    }
+  }
+
+  path0 : [waveAna]
+  end_paths: [ path0 ]  
+}
+
+services.TFileService.fileName: "%ifb_myAnalyserWire%ife"
