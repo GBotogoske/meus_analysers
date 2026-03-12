@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <functional>
 
 static void Normalize(std::unordered_map<int,double>& w)
 {
@@ -144,15 +145,8 @@ namespace {
             double ww = tmp[i].second;
             ids.push_back(tid);
             weights.push_back((float)ww);
-
-            if (tid == 0) 
-            {
-                pdgs.push_back(0);
-                continue;
-            }
             auto const* p = pis.TrackIdToParticle_P(tid);
-            pdgs.push_back(p ? p->PdgCode() : 0);
-            
+            pdgs.push_back(p ? p->PdgCode() : 0);   
         }
   }
 }
@@ -214,6 +208,7 @@ class MyFlashMatchingMC : public art::EDAnalyzer
         float fOverlap=0.f;
         float fJaccard=0.f;
         int   fDomEqual=0;
+        int fDomPDG=0;
 
         std::vector<int> fCommonTIDs; // só IDs (pra debug)
         std::vector<int> fCommonPDGs;
@@ -269,10 +264,11 @@ void MyFlashMatchingMC::beginJob()
 {
     art::ServiceHandle<art::TFileService> tfs;
 
+    //nessa tree é salva as informaceos do flash
     fTreeF = tfs->make<TTree>("treeF", "Flash truth content (MC)");
-    fTreeF->Branch("run", &fRun);
-    fTreeF->Branch("event", &fEvent);
-    fTreeF->Branch("flashKey", &fFlashKey);
+    fTreeF->Branch("run", &fRun); //run
+    fTreeF->Branch("event", &fEvent); //event
+    fTreeF->Branch("flashKey", &fFlashKey); //flashkey
     fTreeF->Branch("time", &fFlashTime);
     fTreeF->Branch("totalPE", &fFlashTotalPE);
     fTreeF->Branch("domTID", &fFlashDomTID);
@@ -305,77 +301,60 @@ void MyFlashMatchingMC::beginJob()
     fTreeFT->Branch("overlapMin", &fOverlap);
     fTreeFT->Branch("jaccardW", &fJaccard);
     fTreeFT->Branch("domEqual", &fDomEqual);
+    fTreeFT->Branch("domPDG", &fDomPDG);
     fTreeFT->Branch("commonTIDs", &fCommonTIDs);
     fTreeFT->Branch("commonPDGs",  &fCommonPDGs);
     
 }
 
-std::unordered_map<int,double>
-MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
+std::unordered_map<int,double> MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
                                  cheat::PhotonBackTrackerService& pbts) const
 {
-  std::unordered_map<int,double> w;
-
-  for (auto const& oph : ophits) 
-  {
-    if(DetectorZone == "Positive" && oph->OpChannel() >= 80) continue;
-    if(DetectorZone == "Negative" && oph->OpChannel() < 80) continue;
-    // SDPs “crus” que contribuíram para esse OpHit
-    auto sdps = pbts.OpHitToSimSDPs_Ps(oph); // vector<const sim::SDP*> :contentReference[oaicite:2]{index=2}
-    if (sdps.empty()) continue;
-
-    // soma fotons totais (dentro desse OpHit)
-    double totPhot = 0.0;
-    for (auto const* sdp : sdps) {
-      if (!sdp) continue;
-      if (sdp->trackID == 0) continue;
-      totPhot += std::max(0.f, sdp->numPhotons); // numPhotons existe em sim::SDP :contentReference[oaicite:3]{index=3}
-    }
-
-    // fallback: se não tem fotons, volta pro teu método antigo (igualitário)
-    if (totPhot <= 0.0) {
-      auto tids = pbts.OpHitToTrackIds(oph);
-      if (tids.empty()) continue;
-      std::unordered_set<int> uniq;
-      for (int tidRaw : tids) {
-        int tid = AbsTID(tidRaw);
-        if (tid) uniq.insert(tid);
-      }
-      if (uniq.empty()) continue;
-
-      double share = oph->PE() / (double)uniq.size();
-      for (int tid : uniq) w[tid] += share;
-      continue;
-    }
-
-    // distribui o PE do hit proporcional ao numPhotons por trackID
-    for (auto const* sdp : sdps) 
+    std::unordered_map<int,double> w;
+    for (auto const& oph : ophits) //vare os hits
     {
-      if (!sdp) continue;
-      int tid = AbsTID(sdp->trackID);
-      if (tid == 0) continue;
+        if(DetectorZone == "Positive" && oph->OpChannel() >= 80) continue;
+        if(DetectorZone == "Negative" && oph->OpChannel() < 80) continue;
+        // SDPs “crus” que contribuíram para esse OpHit
+        auto sdps = pbts.OpHitToSimSDPs_Ps(oph); // vector<const sim::SDP*> --> retorna todo ponto de cintilicao simulado que contribuiu para esse ophit
+        if (sdps.empty()) continue;
 
-      double frac = std::max(0.f, sdp->numPhotons) / totPhot;
-      
-      w[tid] += oph->PE() * frac;
+        // soma fotons totais (dentro desse OpHit)
+        double totPhot = 0.0; // isso vai conter o numero de fotons criados que contribuiram para esse ophit
+        for (auto const* sdp : sdps) //varre todos os pontos de cintilacao
+        {
+            if (!sdp) continue;
+            if (sdp->trackID == 0) continue;
+            totPhot += std::max(0.f, sdp->numPhotons); 
+        }
+
+        // distribui o PE do hit proporcional ao numPhotons por trackID
+        for (auto const* sdp : sdps) //varre todos os pontos de cintilacao
+        {
+            if (!sdp) continue;
+            int tid = AbsTID(sdp->trackID);
+            if (tid == 0) continue;
+            
+            double frac=0.0;
+            if(totPhot>0) frac = std::max(0.f, sdp->numPhotons) / totPhot;
+        
+            w[tid] += oph->PE() * frac; //para cada track MC G4 id construi o a porcentagem do numero de photon eletron responsveis por esse ophit
+        }
     }
-  }
-
-  return w;
+    return w;
 }
 
 
-std::unordered_map<int,double>
-MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
-                                 detinfo::DetectorPropertiesData const& detProp,
-                                 std::vector<art::Ptr<recob::Hit>> const& hits,
-                                 cheat::BackTrackerService const& bts) const
+std::unordered_map<int,double> MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
+                                detinfo::DetectorPropertiesData const& detProp,
+                                std::vector<art::Ptr<recob::Hit>> const& hits,
+                                cheat::BackTrackerService const& bts) const
 {
 
     std::unordered_map<int,double> w;
     auto const& wireReadout = art::ServiceHandle<geo::WireReadout const>()->Get();
 
-    for (auto const& h : hits)
+    for (auto const& h : hits) // varre os hits
     {
         auto wireIDs = wireReadout.ChannelToWire(h->Channel());
         if (wireIDs.empty()) continue;
@@ -383,19 +362,10 @@ MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
 
         geo::PlaneID pid{wid.Cryostat, wid.TPC, wid.Plane};
         double xWire = wireReadout.Plane(pid).GetCenter().X();
-       /*  double yWire = wireReadout.Plane(pid).GetCenter().Y();
-        double zWire = wireReadout.Plane(pid).GetCenter().Z();
-        std::cout << "Cryostat : " << wid.Cryostat << std::endl;
-        std::cout << "TPC : " << wid.TPC << std::endl;
-        std::cout << "Plane : " << wid.Plane << std::endl;
-        std::cout << "X : " << xWire << std::endl;
-        std::cout << "Y : " << yWire << std::endl;
-        std::cout << "Z : " << zWire << std::endl;
-        */
         if (DetectorZone == "Positive" && xWire<0) continue;
         if (DetectorZone == "Negative" && xWire>0) continue;
        
-        auto ides = bts.HitToTrackIDEs(clockData, h);
+        auto ides = bts.HitToTrackIDEs(clockData, h); // le todos os tracks G4 ID que contribuiram para esse hit
         for (auto const& ide : ides)
         {
             int tid = AbsTID(ide.trackID);
@@ -409,20 +379,18 @@ MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
 
 void MyFlashMatchingMC::analyze(art::Event const& e)
 {
-    nFTotal = 0;
-    nTtotal = 0;
+    nFTotal = 0; //numero de flashs totais
+    nTtotal = 0; //numero de tracks totais
 
-    fRun   = e.run();
-    fEvent = e.event();
+    fRun   = e.run(); //indice da run
+    fEvent = e.event(); //indice do evento
 
-    auto const clockData =
-    art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
+    auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e); // informacao do clock
+    auto const detProp = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(e, clockData); //informacao do detector
 
-    auto const detProp = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(e, clockData);
-
-    auto& pbts = *art::ServiceHandle<cheat::PhotonBackTrackerService>();
-    auto const& bts  = *art::ServiceHandle<cheat::BackTrackerService const>();
-    auto const& pis  = *art::ServiceHandle<cheat::ParticleInventoryService const>();
+    auto& pbts = *art::ServiceHandle<cheat::PhotonBackTrackerService>(); //responsavel por buscar fotons da simulacao com base nos ophits
+    auto const& bts  = *art::ServiceHandle<cheat::BackTrackerService const>(); //responsavel por buscar trajetorias MC com base nos hits
+    auto const& pis  = *art::ServiceHandle<cheat::ParticleInventoryService const>(); //responsavel por obter informacoes da particula MC 
 
     // ---- flashes ----
     auto flash_h = e.getHandle<std::vector<recob::OpFlash>>(fFlashLabel);
@@ -431,27 +399,28 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         mf::LogWarning("MyFlashMatchingMC") << "Cannot load OpFlash: " << fFlashLabel;
         return;
     }
-
     std::vector<art::Ptr<recob::OpFlash>> flashes;
     art::fill_ptr_vector(flashes, flash_h);
     std::sort(flashes.begin(), flashes.end(), recob::OpFlashPtrSortByPE);
 
-    art::FindManyP<recob::OpHit> fmOpHits(flash_h, e, fFlashLabel);
+    art::FindManyP<recob::OpHit> fmOpHits(flash_h, e, fFlashLabel); // estrutura para vuscar os hits de um flash
     if (!fmOpHits.isValid())
     {
         mf::LogWarning("MyFlashMatchingMC") << "No OpFlash<->OpHit assns for " << fFlashLabel;
         return;
     }
 
-    const int nF = (int)flashes.size();
-    std::vector<std::unordered_map<int,double>> flashMaps(nF);
+    const int nF = (int)flashes.size(); // carrega o numero de flashs
+    std::vector<std::unordered_map<int,double>> flashMaps(nF); // um vetor ( ... para cada flash ... ) de mapas.
+                                                            //cada mapa associa um trackID(track aqui eh na sim MC G4) um valor de contribuicao para esse flash
 
-    for (int f = 0; f < nF; ++f) 
+    for (int f = 0; f < nF; ++f) // varre os flashes
     {
         auto const& fl = flashes[f];
-        auto ophits = fmOpHits.at(fl.key());
+        auto ophits = fmOpHits.at(fl.key()); // le os ophits desse flash
 
-        auto flash1 = 0.0;
+        //secao de cut de lado do detector---------------------------------------------------------------------
+        auto flash1 = 0.0; 
         auto flash2 = 0.0;
         for(auto const& op: ophits)
         {
@@ -470,37 +439,29 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         if(DetectorZone=="Positive") pass = pass && (flash1>limitMinFlashSide);
         if(DetectorZone=="Negative") pass = pass && (flash2>limitMinFlashSide);
         if(!pass) continue;
-      
-        auto wF = BuildFlashMap(ophits, pbts);
+        //-------------------------------------------------------------------------------------------------------
+        auto wF = BuildFlashMap(ophits, pbts); // construi o mapa para esse flash
         if (wF.empty()) continue;
         nFTotal++;
-        Normalize(wF);
+        Normalize(wF); // normaliza para soma 1
         flashMaps[f] = wF;
 
-        fFlashKey     = fl.key();
-        fFlashTime    = fl->Time();
-        fFlashTotalPE = fl->TotalPE();
+        fFlashKey     = fl.key(); // id
+        fFlashTime    = fl->AbsTime(); // time
+        fFlashTotalPE = fl->TotalPE(); // numero de photo-electrons
 
         double wmax=0.0;
-        fFlashDomTID = DominantID(wF, wmax);
+        fFlashDomTID = DominantID(wF, wmax); // determina track id MC G4 com maior contribuicao
         fFlashDomW   = (float)wmax;
-        if (fFlashDomTID != 0) 
-        {
-            auto const* p = pis.TrackIdToParticle_P(fFlashDomTID);
-            fFlashDomPDG = p ? p->PdgCode() : 0;
-        } 
-        else 
-        {
-            fFlashDomPDG = 0;
-        }
+        auto const* p = pis.TrackIdToParticle_P(fFlashDomTID);
+        fFlashDomPDG = p ? p->PdgCode() : 0;
 
-
-        MapToVectors(wF, pis, fFlashTIDs, fFlashPDGs, fFlashW, fMaxStore);
+        MapToVectors(wF, pis, fFlashTIDs, fFlashPDGs, fFlashW, fMaxStore); //preenche as variavias para salvar na tree
         fTreeF->Fill();
     }
 
     // ---- tracks ----
-
+    //hora de varrer os tracks
     art::Handle<std::vector<recob::Track>> track_h;
     art::Handle<std::vector<recob::Shower>> shower_h;
     art::Handle<std::vector<recob::Slice>> slice_h;
@@ -517,11 +478,18 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
     std::optional<art::FindManyP<recob::Track>> pfp_to_tracks;
     std::optional<art::FindManyP<recob::Shower>> pfp_to_showers;
 
+    std::vector<art::Ptr<recob::PFParticle>> allpfps;
+    std::unordered_map<size_t, art::Ptr<recob::PFParticle>> pfpMap;
+    art::Handle<std::vector<recob::PFParticle>> pfp_h;
+
+
+    // 1 secao setandos os parametros e produtos
     int nT,nS=0;
-    if (ClusterType == "Track")
+    if (ClusterType == "Track") // se estamos no tipo track
     {
         track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
-        if (!track_h) {
+        if (!track_h) 
+        {
             mf::LogWarning("MyFlashMatchingMC") << "Cannot load Track: " << fTrackLabel;
             return;
         }
@@ -534,7 +502,8 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         }
         art::fill_ptr_vector(tracks, track_h);
         nT = (int)tracks.size();
-        if(getShowers)
+        
+        if(getShowers) // se queremos showers tambem
         {
             shower_h = e.getHandle<std::vector<recob::Shower>>(fShowerLabel);
             if (!shower_h) {
@@ -551,7 +520,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             nS = (int)showers.size();
         }
     }
-    else
+    else // se estamos no tipo SLICE
     {
         track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
         if (!track_h)
@@ -567,55 +536,70 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         }
         assnLabel = fSliceLabel;
         fmHits.emplace(track_h, e, fTrackLabel);
+        if (!fmHits->isValid())
+        {
+            mf::LogWarning("MyFlashMatchingMC") << "No Track<->Hit assns for " << fTrackLabel;
+            return;
+        }
+
         art::fill_ptr_vector(slices, slice_h);
         nT = (int)slices.size();
-
-        auto pfp_h = e.getHandle<std::vector<recob::PFParticle>>(fPFPLabel);
+        pfp_h = e.getHandle<std::vector<recob::PFParticle>>(fPFPLabel);
         if (!pfp_h)
         {
             mf::LogWarning("MyFlashMatchingMC") << "Cannot load PFParticle: " << fPFPLabel;
             return;
         }
+
+        art::fill_ptr_vector(allpfps, pfp_h);
+        for (auto const& pfp : allpfps)
+        {
+            if (!pfp.isNull()) pfpMap[pfp->Self()] = pfp;
+        }
+
         slice_to_pfps.emplace(slice_h, e, fSliceLabel);
         pfp_to_tracks.emplace(pfp_h, e, fTrackLabel);
         if (!slice_to_pfps->isValid() || !pfp_to_tracks->isValid())
         {
-            mf::LogWarning("MyFlashMatchingMC")
-            << "Missing Slice<->PFParticle or PFParticle<->Track associations.";
+            mf::LogWarning("MyFlashMatchingMC") << "Missing Slice<->PFParticle or PFParticle<->Track associations.";
             return;
         }
 
-        
-        if (getShowers)
+        if (getShowers) // se queremos showers
         {
             shower_h = e.getHandle<std::vector<recob::Shower>>(fShowerLabel);
-            if (!shower_h) {
+            if (!shower_h) 
+            {
                 mf::LogWarning("MyFlashMatchingMC") << "Cannot load Shower: " << fShowerLabel;
                 return;
             }
 
             fmHitsShower.emplace(shower_h, e, fShowerLabel);
-            if (!fmHitsShower->isValid()) {
+            if (!fmHitsShower->isValid()) 
+            {
                 mf::LogWarning("MyFlashMatchingMC") << "No Shower<->Hit assns for " << fShowerLabel;
                 return;
             }
 
             // PFParticle -> Shower (assns produzidas pelo módulo de shower)
             pfp_to_showers.emplace(pfp_h, e, fShowerLabel);
-            if (!pfp_to_showers->isValid()) {
+            if (!pfp_to_showers->isValid()) 
+            {
                 mf::LogWarning("MyFlashMatchingMC") << "No PFParticle<->Shower assns for " << fShowerLabel;
                 return;
             }
         }
     }
 
+    // 2 secao lendo os dados
     int nTotal = nT + nS;
-    std::vector<std::unordered_map<int,double>> trackMaps(nTotal);
+    std::vector<std::unordered_map<int,double>> trackMaps(nTotal); // um vetor ( ... para cada entidade(track/shower/slice) ... ) de mapas.
+                                                            //cada mapa associa um trackID(track aqui eh na sim MC G4) um valor de contribuicao para esse cluster
 
-    for (int t = 0; t < (nTotal); ++t)
+    for (int t = 0; t < (nTotal); ++t) // varre os cluster
     {
         std::vector<art::Ptr<recob::Hit>> hits;
-        if(ClusterType == "Track")
+        if(ClusterType == "Track") // tipo track/shower
         {
             if(t<nT)
             {
@@ -641,99 +625,122 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             }
             
         }
-        else
+        else // tipo slice
         {
             auto const& slice = slices[t];
-            fTrackKey = slice.key();
+            fTrackKey    = slice.key();
             fTrackRecoID = slice->ID();
-            fType = 3 ;
+            fType        = 3;
+
+            double myLength = 0.0;
 
             std::vector<art::Ptr<recob::Hit>> hits_sel;
-            bool anyGoodTrack = false;
+            bool anyGoodObj = false;
 
-            std::unordered_set<size_t> seen;
+            std::unordered_set<size_t> seenPFP;
+            std::unordered_set<size_t> seenHits;
 
-            auto pfps = slice_to_pfps->at(slice.key());
-            for (auto const& pfp : pfps)
+            auto seed_pfps = slice_to_pfps->at(slice.key());
+
+            std::function<void(const art::Ptr<recob::PFParticle>&)> visitPFP;
+            visitPFP = [&](const art::Ptr<recob::PFParticle>& pfp)
             {
+                if (pfp.isNull()) return;
+
+                const size_t self = pfp->Self();
+                if (!seenPFP.insert(self).second) return;
+
+                // Tracks associados a este PFP
                 auto trks = pfp_to_tracks->at(pfp.key());
-                for (auto const& trk : trks) 
+                for (auto const& trk : trks)
                 {
                     if (trk.isNull()) continue;
-                    if (trk->Length() < trackLength) continue;  
 
-                    anyGoodTrack = true;
+                    myLength += trk->Length();
+                    anyGoodObj = true;
+
                     auto trkHits = fmHits->at(trk.key());
-                    // >>> DEDUPE: evita contar o mesmo hit duas vezes
                     for (auto const& h : trkHits)
                     {
                         if (h.isNull()) continue;
-                        if (!seen.insert(h.key()).second) continue; // já tinha
+                        if (!seenHits.insert(h.key()).second) continue;
                         hits_sel.push_back(h);
                     }
                 }
-                if (getShowers)
+
+                // Showers associados a este PFP
+                if (getShowers && pfp_to_showers && fmHitsShower)
                 {
                     auto shws = pfp_to_showers->at(pfp.key());
                     for (auto const& shw : shws)
                     {
                         if (shw.isNull()) continue;
-                        if (shw->Length() < trackLength) continue; // ou um corte separado
 
-                        anyGoodTrack = true; // (renomeia pra anyGoodObj se quiser)
+                        myLength += shw->Length();
+                        anyGoodObj = true;
+
                         auto shwHits = fmHitsShower->at(shw.key());
-
                         for (auto const& h : shwHits)
                         {
                             if (h.isNull()) continue;
-                            if (!seen.insert(h.key()).second) continue;
+                            if (!seenHits.insert(h.key()).second) continue;
                             hits_sel.push_back(h);
                         }
                     }
                 }
+
+                // Desce para as filhas
+                for (size_t dauID : pfp->Daughters())
+                {
+                    auto it = pfpMap.find(dauID);
+                    if (it != pfpMap.end())
+                    {
+                        visitPFP(it->second);
+                    }
+                }
+            };
+
+            for (auto const& pfp : seed_pfps)
+            {
+                visitPFP(pfp);
             }
-          
-            if (!anyGoodTrack) continue;
+
+            if (!anyGoodObj) continue;
             if (hits_sel.empty()) continue;
+            if (myLength < trackLength) continue;
 
             hits = std::move(hits_sel);
-  
         }
      
-        auto wT = BuildTrackMap(clockData, detProp, hits, bts);
+        auto wT = BuildTrackMap(clockData, detProp, hits, bts); //consturi o mapa
         if (wT.empty()) continue;
         nTtotal++;     
-        Normalize(wT);
+        Normalize(wT); // normaliza para soma 1
         trackMaps[t] = wT;
 
         double wmax=0.0;
-        fTrackDomTID = DominantID(wT, wmax);
+        fTrackDomTID = DominantID(wT, wmax); //determina track com contribuicao mais forte
         fTrackDomW   = (float)wmax;
-        if (fTrackDomTID != 0)
-        {
-            auto const* p = pis.TrackIdToParticle_P(fTrackDomTID);
-            fTrackDomPDG = p ? p->PdgCode() : 0;
-        } else 
-        {
-            fTrackDomPDG = 0;
-        }
+        auto const* p = pis.TrackIdToParticle_P(fTrackDomTID);
+        fTrackDomPDG = p ? p->PdgCode() : 0;
 
-        MapToVectors(wT, pis, fTrackTIDs, fTrackPDGs, fTrackW, fMaxStore);
+        MapToVectors(wT, pis, fTrackTIDs, fTrackPDGs, fTrackW, fMaxStore); // preenche os vetores para salvar na tree
         fTreeT->Fill();
     }
 
     // ---- candidates flash ↔ track ----
-    for (int f = 0; f < nF; ++f) 
+    //vamos varrer cada possivel match
+    for (int f = 0; f < nF; ++f)  
     {
         if (flashMaps[f].empty()) continue; 
         for (int t = 0; t < nTotal; ++t) 
         {
             if (trackMaps[t].empty()) continue;
-            double ov  = OverlapMin(flashMaps[f], trackMaps[t]);
+            double ov  = OverlapMin(flashMaps[f], trackMaps[t]); // calcula o overlap min
             if (ov <= 0.0) continue;
 
-            double jac = JaccardWeighted(flashMaps[f], trackMaps[t]);
-            if (jac < fMinJaccard) continue;
+            double jac = JaccardWeighted(flashMaps[f], trackMaps[t]); // calcula o peso jaccard
+            if (jac <= fMinJaccard) continue;
 
             fPairFlashKey   = flashes[f].key();
             if(ClusterType == "Track")
@@ -765,9 +772,18 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             fJaccard        = (float)jac;
 
             double tmp=0.0;
-            int domF = DominantID(flashMaps[f], tmp);
-            int domT = DominantID(trackMaps[t], tmp);
-            fDomEqual = (AbsTID(domF) == AbsTID(domT)) ? 1 : 0;
+            int domF = DominantID(flashMaps[f], tmp); // determina o  trackid geant4 dominante para flash
+            int domT = DominantID(trackMaps[t], tmp); // determina o trackid geant dominatne para track
+            fDomEqual = (AbsTID(domF) == AbsTID(domT)) ? 1 : 0; // determina se eh o mesmo ou 
+            if (fDomEqual==1) 
+            {
+                auto const* p = pis.TrackIdToParticle_P(domF);
+                fDomPDG = p ? p->PdgCode() : 0;
+            } 
+            else 
+            {
+                fDomPDG = -10000;
+            }
 
             // comuns (só pra debug, top por min(wF,wT))
             fCommonTIDs.clear();
@@ -794,16 +810,12 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
 
                     // PDG do MCParticle (protege nullptr)
                     int pdg = 0;
-                    if (tid != 0) 
-                    {
-                        auto const* p = pis.TrackIdToParticle_P(tid);
-                        pdg = p ? p->PdgCode() : 0;
-                    }
+                    auto const* p = pis.TrackIdToParticle_P(tid);
+                    pdg = p ? p->PdgCode() : 0;
                     fCommonTIDs.push_back(tid);
                     fCommonPDGs.push_back(pdg);
                 }
             }
-
 
             fTreeFT->Fill();
         }

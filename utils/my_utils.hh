@@ -16,16 +16,17 @@ class QPoint
         QPoint()
         {
         }
-        QPoint(double x0,double y0,double z0, double q0, double pitch0 = 0.0)
+        QPoint(double x0,double y0,double z0, double q0, double pitch0 = 0.0, double APA0=-1)
         {
             x=x0;
             y=y0;
             z=z0;
             q=q0;
             pitch=pitch0;
+            APA=APA0;
         }
         ~QPoint() {}
-        double x,y,z,q,pitch;
+        double x,y,z,q,pitch,APA;
 };
 
 class QCluster : public std::vector<QPoint>
@@ -35,10 +36,12 @@ class QCluster : public std::vector<QPoint>
         int type = 0; // 0 --> track, 1-->shower, 2-->PFP, 3-->Slice
         int APA = 0;
 
+        double Length = 0.0;
+
         QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -49,8 +52,21 @@ class QCluster : public std::vector<QPoint>
                 objID = other.objID;
                 type = other.type;
                 APA = other.APA;
+                Length = other.Length;
             }
             return *this;
+        }
+
+        double TotalCharge() const
+        {
+            double qT = 0.0;
+            for (const auto& p : *this) 
+            {
+                double qi = p.q;
+                if (p.pitch > 0.0) qi *= p.pitch;
+                qT += qi;
+            }
+            return qT;
         }
 };
 
@@ -77,7 +93,15 @@ public:
         for (double& v : PE_CH) v /= sum;
     }
 
-
+    double TotalLight()
+    {
+        double qT = 0.0;
+        for(const auto l: PE_CH)
+        {
+            qT+=l;
+        }
+        return qT;
+    }
 };
 
 static inline bool isZero(double x, double eps=1e-12)
@@ -318,7 +342,8 @@ static void step4_adjust(std::vector<std::vector<double>>& M,
 
 struct HungarianResult 
 {
-    std::vector<int> assign; // assign[row] = col (ou -1)
+    std::vector<int> row2col; // [row] = col (ou -1)
+    std::vector<int> col2row; // [col] = row (ou -1)
     double cost = 0.0;
 };
 
@@ -327,7 +352,7 @@ inline HungarianResult hungarian_min(const std::vector<std::vector<double>>& C_i
 {
     int m = (int)C_in.size();
     int n = m ? (int)C_in[0].size() : 0;
-    if (m == 0 || n == 0) return {{}, 0.0};
+    if (m == 0 || n == 0) return HungarianResult{{}, {}, 0.0};
 
     // verifica retangular
     for (const auto& row : C_in)
@@ -367,21 +392,20 @@ inline HungarianResult hungarian_min(const std::vector<std::vector<double>>& C_i
         {
             // STEP 5: assignment vem do matching
             HungarianResult res;
-            res.assign.assign(m, -1);
+            res.row2col.assign(m, -1);
+            res.col2row.assign(n, -1);
             res.cost = 0.0;
 
-            for (int i = 0; i < m; ++i) 
+            for (int i = 0; i < m; ++i)
             {
                 int j = mt.row2col[i];
-                if (j >= 0 && j < n) 
+                if (j >= 0 && j < n)
                 {
-                    res.assign[i] = j;
+                    res.row2col[i] = j;
+                    res.col2row[j] = i;   // inverso
                     res.cost += C_in[i][j];
-                } 
-                else
-                {
-                    res.assign[i] = -1; // casou com dummy
                 }
+                // else: ficou -1 (dummy)
             }
             return res;
         }

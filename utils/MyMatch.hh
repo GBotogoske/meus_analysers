@@ -15,7 +15,7 @@ class myMatch
         myMatch();
         myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
             double drift_speed, double elec_atenuation, double density, double Efield, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
-             bool norm=false, std::string DetectorZone = "All", std::string Order = "flash", bool fit_mode=true);
+             bool norm=false, std::string DetectorZone = "All", std::string typeFit = "flash", bool fit_mode=true);
         ~myMatch();
 
         int Nc;
@@ -28,6 +28,8 @@ class myMatch
 
         bool checkPossibility(const QCluster* qs,const  QFlash* qf);
         bool startFlash(const QCluster* qs,const  QFlash* qf);
+
+        double returnVisEff(const QCluster* qs, double xoffset);
         
         double drift_length;
         double drift_speed;
@@ -41,7 +43,6 @@ class myMatch
         TMinuit* MyMinuit = nullptr;
         int num_var = 1;
         void ChargeHypothesis(const double xoffset);
-        void ChargeHypothesis_2(const double xoffset);
         double NLL(); //Negative Log-Likelihood
         static myMatch* s_me;
         static void FCN(Int_t&, Double_t*, Double_t& f, Double_t* x, Int_t); //FUNCAO DE MINIMAZAO PARA MINUIT
@@ -49,8 +50,10 @@ class myMatch
         std::vector<std::vector<double>> MYScore;
         std::vector<std::vector<double>> MYOffset;
         std::vector<std::vector<double>> MYdeltaT0;
+        std::vector<std::vector<double>> MYcloseAnode;
+        std::vector<std::vector<double>> MYvisEf;
 
-        std::string type_order = "flash";
+        std::string type_fit = "flash";
 
         QFlash flash_actual;
         QCluster cluster_actual;
@@ -71,6 +74,9 @@ class myMatch
 
         std::map<int,int> ch_min_map = {{1,120}, {2,40}, {5,80}, {6,0}};
         std::map<int,int> ch_max_map = {{1,159}, {2,79}, {5,119}, {6,39}};
+
+        std::vector<double> direct_visibilities;
+
 
 };
 

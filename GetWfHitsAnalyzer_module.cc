@@ -13,12 +13,17 @@
 #include "lardataobj/Simulation/SimPhotons.h"
 
 #include "lardataobj/RawData/OpDetWaveform.h"
+#include "lardataobj/RawData/RDTimeStamp.h"
+
 #include "lardataobj/RecoBase/OpWaveform.h"
 
 #include "dunecore/DuneObj/OpDetDivRec.h" 
 #include "lardataobj/RecoBase/OpFlash.h"
 #include "lardataobj/RecoBase/OpHit.h"
 #include "larsim/MCCheater/ParticleInventoryService.h" 
+
+#include "lardata/DetectorInfoServices/DetectorClocksService.h"
+
 
 
 class GetWfHitsAnalyzer : public art::EDAnalyzer 
@@ -34,6 +39,7 @@ class GetWfHitsAnalyzer : public art::EDAnalyzer
 
     TTree* fTreeW = nullptr; // Waveforms
     TTree* fTreeH = nullptr; // Hits
+    TTree* fTreeF = nullptr; // Flashs
   
     int fRun, fEvent;
     int fOfflineChannel;
@@ -56,7 +62,7 @@ class GetWfHitsAnalyzer : public art::EDAnalyzer
     double 	fPE;
     double 	fFastToTotal ;
 
-
+    Long64_t fflashTime;
 };
 
 GetWfHitsAnalyzer::GetWfHitsAnalyzer(fhicl::ParameterSet const& p)
@@ -77,7 +83,6 @@ void GetWfHitsAnalyzer::beginJob()
     fTreeW->Branch("offline_channel_dec" , &fOfflineChannel_dec);
     fTreeW->Branch("timestamp_dec" , &fTimestamp_dec);
     fTreeW->Branch("adc_dec" , &fADCValue_dec);    
-
 
     fTreeH = tfs->make<TTree>("hit_tree", "Hits");
     fTreeH->Branch("run" , &fRun);
@@ -101,7 +106,10 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
         fRun = e.run();
         fEvent = e.event();
 
-        auto wfHandle = e.getHandle<std::vector<raw::OpDetWaveform>>(art::InputTag("opdigi", "", "Detsim"));
+        auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
+        std::cout << clockData.TriggerTime() << "--- " << clockData.TriggerOffsetTPC() <<std::endl;
+
+        auto wfHandle = e.getHandle<std::vector<raw::OpDetWaveform>>(art::InputTag("pdhddaphne", "daq", "pdhdkeepupstage1"));//(art::InputTag("opdigi", "", "Detsim"));
         auto wfdecHandle = e.getHandle<std::vector<recob::OpWaveform>>(art::InputTag("opdec", "", "myFlash"));
 
         if (!wfHandle || wfHandle->empty()) 
@@ -123,16 +131,27 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
             return;
         }
 
+        auto FlashHandle = e.getHandle<std::vector<recob::OpFlash>>(art::InputTag("opflash::myFlash"));
+        if (!FlashHandle || FlashHandle->empty()) 
+        {
+            std::cout << "No OpFlash data in event: run " << fRun << ", event " << fEvent << std::endl;
+            return;
+        }
+
+
         art::FindManyP<recob::OpWaveform> RawtoDec(wfHandle, e, art::InputTag("opdec", "", "myFlash"));
 
-        int i =0;
+        std::vector<art::Ptr<raw::OpDetWaveform>> wfs;
+        art::fill_ptr_vector(wfs, wfHandle);
+        int i = 0;
         for (const auto& wf : *wfHandle) 
         {
             fOfflineChannel = wf.ChannelNumber();
             fTimestamp = wf.TimeStamp();
             fADCValue.assign(wf.begin(), wf.end()); 
 
-            auto decPtrs = RawtoDec.at(i);           
+            auto decPtrs = RawtoDec.at(wfs[i].key());   
+            i++;        
             if (decPtrs.empty()) continue;
 
             // Normalmente vem 1 OpWaveform associado
@@ -143,7 +162,7 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
             fADCValue_dec = signal_dec; 
             
             fTreeW->Fill();
-            i++;
+            
         }
 
         for (const auto& hit : *HitHandle) 
@@ -161,7 +180,7 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
             fFastToTotal=hit.FastToTotal();
             fTreeH->Fill();
         }
-        
+
 }
 
 DEFINE_ART_MODULE(GetWfHitsAnalyzer)

@@ -15,7 +15,7 @@ myMatch::~myMatch()
 
 bool myMatch::checkPossibility(const QCluster* qs, const QFlash* qf)
 {
-    if(fActualDetectorZone=="All") return true;
+    //if(fActualDetectorZone=="All") return true;
     if (!qs || !qf) return false;
     if (qs->empty()) return false;
     if (drift_speed <= 0.0 || drift_length <= 0.0) return true;
@@ -25,6 +25,7 @@ bool myMatch::checkPossibility(const QCluster* qs, const QFlash* qf)
     // --- Decide o lado do flash por PE (melhor que "xflashmedio" em ±L) ---
     double PE1=0.0,PE2=0.0,PE5=0.0,PE6=0.0;
     double peNeg = 0.0, pePos = 0.0;
+
     for (int i = 0; i < CH_MAX; ++i) 
     {
         const double pe = qf->PE_CH[i];
@@ -34,6 +35,7 @@ bool myMatch::checkPossibility(const QCluster* qs, const QFlash* qf)
         else if(i>=80 && i<120) PE5+=pe;
         else if(i>=120 && i<160) PE1+=pe;
     }
+
     pePos = PE6+PE2;
     peNeg = PE5+PE1;
     const double peTot = peNeg + pePos;
@@ -41,59 +43,83 @@ bool myMatch::checkPossibility(const QCluster* qs, const QFlash* qf)
 
     const int side = (pePos > peNeg) ? +1 : -1; // +1 -> +x, -1 -> -x
 
+    int hits1=0,hits2=0,hits5=0,hits6=0;
+    for (auto const& pt : *qs) 
+    {
+        const int thisAPA = (pt.APA);
+        if(thisAPA==1) hits1++; 
+        if(thisAPA==2) hits2++; 
+        if(thisAPA==5) hits5++; 
+        if(thisAPA==6) hits6++; 
+    }
+
+    if((hits6+hits2)>(hits1+hits5)) fActualDetectorZone="Positive";
+    else if ((hits6 + hits2)<(hits1+hits5)) fActualDetectorZone="Negative";
+    else fActualDetectorZone="Equal";
+
     // --- Consistência de lado (heurística) ---
     if (side > 0 && fActualDetectorZone == "Negative") return false;
     if (side < 0 && fActualDetectorZone == "Positive") return false;
 
-   /*  if(fActualDetectorZone == "Positive" || fDetectorZone == "Positive")
-    {
-        const int APAside =  (PE6 > PE2) ? 6 : 2;
-        if(APAside != this->APA) return false;
-    }
-
-    if(fActualDetectorZone == "Negative" || fDetectorZone == "Negative")
-    {
-        const int APAside =  (PE1 > PE5) ? 1 : 5;
-         if(APAside != this->APA) return false;
-    } */
-
     // --- Tempo (deixa explícito: t0 = time - offset_total) ---
     const double ttrigger     = -0; // aqui funciona para MC
-    const double tflash_shift = 0.0; //1 --> -250.0; 2 --> 0 ; 3--> -500
+    const double tflash_shift = 0; //1 --> -250.0; 2 --> 0 ; 3--> -500
     const double flash_time = qf->time - (ttrigger + tflash_shift); // ajuste sinais como você define offsets
 
-    double xmin =  100000;
-    double xmax = -100000;
+    double xminP =  100000;
+    double xmaxP = -100000;
+    double xminN =  100000;
+    double xmaxN = -100000;
+
+    bool hasNeg=false;
+    bool hasPos=false;
 
     for (auto const& pt : *qs) 
     {
         const double xlocal = (pt.x);   // se lado -, espelha
-        xmin = std::min(xmin, xlocal);
-        xmax = std::max(xmax, xlocal);
+        if(pt.APA==6 || pt.APA==2)
+        {
+            xminP = std::min(xminP, xlocal);
+            xmaxP = std::max(xmaxP, xlocal);
+            hasPos=true;
+        }
+        if(pt.APA==1 || pt.APA==5)
+        {
+            xminN = std::min(xminN, xlocal);
+            xmaxN = std::max(xmaxN, xlocal);
+            hasNeg=true;
+        }
+        
     }
 
     const double v = drift_speed;
     const double L = drift_length;
 
     // 0 <= x_real = x_pandora + v*t0 <= L  (teu comentário)
-    double tmin = -xmin / v;
-    double tmax = (L - xmax) / v;
-    if(fActualDetectorZone=="Positive" || fDetectorZone=="Positive")
+    double tminP = 0.0;
+    double tmaxP = 0.0;
+    double tminN = 0.0;
+    double tmaxN = 0.0;
+    
+    bool checkP=true;
+    bool checkN=true;
+    const double pad = 300.0; //300.0; // opcional: tolerância (ex.: 5 us)
+    if(hasPos)
     {
-        tmin = -xmin / v;
-        tmax = (L - xmax) / v;
+        tminP = -xminP / v;
+        tmaxP = (L - xmaxP) / v;
+        if (tminP > tmaxP) return false;
+        checkP = (flash_time >= tminP - pad) && (flash_time <= tmaxP + pad);
     }
-    else if(fActualDetectorZone=="Negative" ||  fDetectorZone=="Negative")
+    if(hasNeg)
     {
-        tmax = (xmin+L)/v;
-        tmin = xmax / v;
+        tmaxN = (xminN+L)/v;
+        tminN = xmaxN / v;
+        if (tminN > tmaxN) return false;
+        checkN = (flash_time >= tminN - pad) && (flash_time <= tmaxN + pad);
     }
-
-    if (tmin > tmax) return false;
-
-    const double pad = 50.0; //300.0; // opcional: tolerância (ex.: 5 us)
     //std::cout << tmin << " < " << flash_time << " < " << tmax << std::endl;
-    return (flash_time >= tmin - pad) && (flash_time <= tmax + pad);
+    return checkP && checkN;
 }
 
 myMatch* myMatch::s_me = nullptr;
@@ -101,8 +127,7 @@ myMatch* myMatch::s_me = nullptr;
 void myMatch::FCN(Int_t&, Double_t*, Double_t& f, Double_t* x, Int_t)
 {
   // x[0] = xoffset
-  //s_me->ChargeHypothesis(x[0]);
-    s_me->ChargeHypothesis_2(x[0]);
+    s_me->ChargeHypothesis(x[0]);
     f = s_me->NLL();
 }
 
@@ -115,25 +140,9 @@ double myMatch::NLL()
     int chi=0;
     int chf=CH_MAX-1;
 
-    if(fDetectorZone=="Positive" || fActualDetectorZone=="Positive")
-    {
-        chi=0;
-        chf=79;
-    }
-    if(fDetectorZone=="Negative" || fActualDetectorZone=="Negative")
-    {
-        chi=80;
-        chf=159;
-    }
-    /* if(fDetectorZone=="All")
-    {
-        chi=ch_min_map[this->APA];
-        chf=ch_max_map[this->APA];
-    } */
-
     if(normPE) flash_fit.norm_this_flash();
 
-    if(type_order=="flash")
+    if(type_fit=="flash")
     {
         for(int ch=chi;ch<=chf;++ch)
         {   
@@ -172,86 +181,8 @@ double myMatch::NLL()
     return nll;
 }
 
+
 void myMatch::ChargeHypothesis(const double xoffset)
-{
-    //faz o deslocamento
-    cluster_fit.resize(cluster_actual.size());
-    for (size_t pt_index = 0; pt_index < cluster_actual.size(); ++pt_index) 
-    {
-        cluster_fit[pt_index].x = cluster_actual[pt_index].x + xoffset;
-        cluster_fit[pt_index].y = cluster_actual[pt_index].y;
-        cluster_fit[pt_index].z = cluster_actual[pt_index].z;
-        cluster_fit[pt_index].q = cluster_actual[pt_index].q;
-    }
-
-    int chi=0;
-    int chf=CH_MAX-1;
-
-    if(fDetectorZone=="Positive" || fActualDetectorZone=="Positive")
-    {
-        chi=0;
-        chf=79;
-    }
-    if(fDetectorZone=="Negative" || fActualDetectorZone=="Negative")
-    {
-        chi=80;
-        chf=159;
-    }
-    
-    for(int ch=0;ch<CH_MAX;++ch)
-    {
-        this->flash_fit.PE_CH[ch]=0.0;
-    }  
-
-    std::vector<double> direct_visibilities(fPVS->NOpChannels(), 0.0);
-    direct_visibilities.reserve(fPVS->NOpChannels());
-    //varre o cluster
-    for(size_t i=0;i<this->cluster_fit.size();i++)
-    {   
-        double x = 0.0;
-        double y = 0.0;
-        double z = 0.0;
-        double q = 0.0;
-
-        x = this->cluster_fit[i].x ;
-        y = this->cluster_fit[i].y ;
-        z = this->cluster_fit[i].z ;
-        q = this->cluster_fit[i].q ;
-        geo::Point_t point{x, y, z};
-
-        //calcula a visibilidade
-        
-        fSAM->detectedDirectVisibilities(direct_visibilities, point);
-       
-        for(int ch=chi;ch<=chf;++ch)
-        {   
-            //std::cout << "i := " << i << std::endl;  
-            //std::vector<double> reflected_visibilities;
-            //fSAM->detectedDirectVisibilities(reflected_visibilities, point);
-            //double v1 = fPVS->GetVisibility(point, ch);
-            //double v2 = fPVS->GetVisibility(point, ch , true);
-            //double v3 = direct_visibilities[ch];
-            //double v4 = reflected_visibilities[ch];
-            double vis = direct_visibilities[ch];
-            double n1 = q*vis*eff;
-            this->flash_fit.PE_CH[ch]+=n1;
-        }     
-    }
-
-    if(pause_now)
-    {   
-         std::cout << "HYPOTESIS FLASH" << std::endl;
-        for(int ch=0;ch<CH_MAX;++ch)
-        {
-            std::cout << "CH: " << ch << " => " << this->flash_fit.PE_CH[ch] << std::endl;
-        }   
-        std::cout << "Press ENTER." << std::endl;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-    }
-    //return QFlash();
-}
-
-void myMatch::ChargeHypothesis_2(const double xoffset)
 {
     //faz o deslocamento
     cluster_fit.resize(cluster_actual.size());
@@ -270,7 +201,9 @@ void myMatch::ChargeHypothesis_2(const double xoffset)
     double A=0.930; //
     for (size_t pt_index = 0; pt_index < cluster_actual.size(); ++pt_index) 
     {
-        cluster_fit[pt_index].x = cluster_actual[pt_index].x + xoffset;
+        if(cluster_actual[pt_index].APA==2 ||cluster_actual[pt_index].APA==6 ) cluster_fit[pt_index].x = cluster_actual[pt_index].x + xoffset;
+        else if(cluster_actual[pt_index].APA==1 ||cluster_actual[pt_index].APA==5 ) cluster_fit[pt_index].x = cluster_actual[pt_index].x - xoffset;
+
         cluster_fit[pt_index].y = cluster_actual[pt_index].y;
         cluster_fit[pt_index].z = cluster_actual[pt_index].z;
 
@@ -296,8 +229,6 @@ void myMatch::ChargeHypothesis_2(const double xoffset)
         this->flash_fit.PE_CH[ch]=0.0;
     }  
 
-    std::vector<double> direct_visibilities(fPVS->NOpChannels(), 0.0);
-    direct_visibilities.reserve(fPVS->NOpChannels());
     //varre o cluster
     for(size_t i=0;i<this->cluster_fit.size();i++)
     {   
@@ -318,16 +249,7 @@ void myMatch::ChargeHypothesis_2(const double xoffset)
        
         int chi=0;
         int chf=CH_MAX-1;
-        if(fDetectorZone=="Positive" || fActualDetectorZone=="Positive")
-        {
-            chi=0;
-            chf=79;
-        }
-        if(fDetectorZone=="Negative" || fActualDetectorZone=="Negative")
-        {
-            chi=80;
-            chf=159;
-        }
+   
         for(int ch=chi;ch<=chf;++ch)
         {   
             //std::cout << "i := " << i << std::endl;  
@@ -342,50 +264,101 @@ void myMatch::ChargeHypothesis_2(const double xoffset)
             this->flash_fit.PE_CH[ch]+=n1;
         }     
     }
-
-    if(pause_now)
-    {   
-         std::cout << "HYPOTESIS FLASH" << std::endl;
-        for(int ch=0;ch<CH_MAX;++ch)
-        {
-            std::cout << "CH: " << ch << " => " << this->flash_fit.PE_CH[ch] << std::endl;
-        }   
-        std::cout << "Press ENTER." << std::endl;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-    }
-    //return QFlash();
 }
 
 bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
 {
     s_me = this;
 
-    double x_max = -10e9;
-    double x_min = 10e9;
+    double x_maxP = -10e9;
+    double x_minP = 10e9;
+    double x_maxN = -10e9;
+    double x_minN = 10e9;
 
     //pega o t0 candidato
     double t0=qf->time;
     double shiftt0=t0*drift_speed;
 
+    bool hasP = false;
+    bool hasN = false;
+
     //determina o valor minino e maximo em coordenadas do pandora
     QCluster track = *qs;
     for (auto const& pt : *qs)
-    {
-        if (pt.x > x_max) 
-        { 
-            x_max = pt.x; 
-        }
-        if (pt.x < x_min) 
+    {   
+        if(pt.APA==2 || pt.APA==6 )
         {
-            x_min = pt.x; 
+            hasP=true;
+            if (pt.x > x_maxP) 
+            { 
+                x_maxP = pt.x; 
+            }
+            if (pt.x < x_minP) 
+            {
+                x_minP = pt.x; 
+            }
         }
+        if(pt.APA==1 || pt.APA==5 )
+        {
+            hasN=true;
+            if (pt.x > x_maxN) 
+            { 
+                x_maxN = pt.x; 
+            }
+            if (pt.x < x_minN) 
+            {
+                x_minN = pt.x; 
+            }
+        }      
     }
 
+    int side_shifted=0;
     //desloca para comecar em x=0;
-    for (auto &pt : track)
+    if(hasN==false)
     {
-        pt.x -= x_min;
-    } 
+        for (auto &pt : track)
+        {
+            pt.x -= x_minP;
+        }
+    }
+    else if(hasP==false)
+    {
+        for (auto &pt : track)
+        {
+            pt.x -= x_maxN;
+        }
+    }
+    else // ambos positivos
+    {
+        if(x_maxN+x_minP<0)
+        {
+            side_shifted=+1;
+            for (auto &pt : track)
+            {
+                if(pt.APA==2 ||pt.APA==6 )  pt.x -= x_minP;
+                if(pt.APA==1 ||pt.APA==5 )  pt.x += x_minP;   
+            }
+        }
+        else
+        {
+            side_shifted=-1;
+            for (auto &pt : track)
+            {
+                if(pt.APA==2 ||pt.APA==6 )  pt.x += x_maxN;
+                if(pt.APA==1 ||pt.APA==5 )  pt.x -= x_maxN;  
+            }
+        }
+    }
+    
+    double x_maxAbs = -10e9;
+    for (auto const& pt : track)
+    {   
+        if (abs(pt.x) > x_maxAbs) 
+        { 
+            x_maxAbs = abs(pt.x); 
+        }    
+    }
+
     this->flash_actual = *qf;
     this->cluster_actual = track;
     //-------
@@ -397,27 +370,37 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
     // fazer configuracoes do minuit
     // 
 
-    const double deltaX = x_max - x_min; //tamanho do track
+    //const double deltaXP = x_maxP - x_minP; //tamanho do track
+    //const double deltaXN = x_maxP - x_minP; 
     const double step = 0.1;
-    double xfitmin = -this->drift_length;
-    double xfitmax = this->drift_length-deltaX;
+    double xfitmin = 0;
+    double xfitmax = this->drift_length-x_maxAbs;
 
-    double shiftx=0.0;
     double x0=0.0;
-    double x_tolerance = 15;
+    double x_tolerance = 5;
+  
+    if(hasN==false)
+    {
+        x0 = x_minP + shiftt0;
+    }
+    else if(hasP==false)
+    {
+        x0 = x_maxN - shiftt0;
+    }
+    else
+    {
+        if(side_shifted==+1)
+        {
+            x0 = x_minP + shiftt0;
+        }
+        if(side_shifted==-1)
+        {
+            x0 = x_maxN - shiftt0;
+        }   
+    }
 
-    if(fDetectorZone=="Positive" || this->fActualDetectorZone=="Positive" ) 
-    {
-        xfitmin = 0;
-        shiftx=deltaX;
-        x0 = x_min + shiftt0;
-    }
-    else if(fDetectorZone=="Negative" || this->fActualDetectorZone=="Negative")
-    {
-        xfitmax = 0-deltaX;
-        shiftx=0;
-        x0 = x_min - shiftt0;
-    }
+    x0=abs(x0);
+
     //-----------------------------------
     double bestx=x0, bestxerr=0;
     if(fit_mode)
@@ -435,38 +418,57 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
         double arglist[2] = {5000, 0.01};//{5000, 0.01};
         MyMinuit->mnexcm("MIGRAD", arglist, 2, ierr);
         MyMinuit->GetParameter(0, bestx, bestxerr);
+
+        //if(ierr!=0) return false;
     }
      
-    if(fDetectorZone=="Positive" || this->fActualDetectorZone=="Positive" ) 
+    if(hasN==false || side_shifted==+1 ) 
     {
-        shiftt0= x0 - x_min;
+        shiftt0 = bestx - x_minP;
     }
-    else if(fDetectorZone=="Negative" || this->fActualDetectorZone=="Negative")
+    else if(hasP==false || side_shifted==-1 ) 
     {
-        shiftt0= x_min - x0;
+        shiftt0 = x_maxN - (-bestx);
     }
 
-    ChargeHypothesis_2(bestx);    
-    //ChargeHypothesis(bestx);          // hipótese final
-    if(type_order=="flash")
+    ChargeHypothesis(bestx);    
+
+    //buscar o ponto mais proximo do anodo...
+    double x_close_anode;
+    if(hasN==false) 
     {
-        this->MYScore[nf][nc] = NLL();
-        this->MYOffset[nf][nc] = bestx+shiftx;
-        this->MYdeltaT0[nf][nc] = shiftt0;  
+        x_close_anode = x_maxP + shiftt0;
+    }
+    else if(hasP==false)
+    {
+        x_close_anode = x_minN - shiftt0;
     }
     else
     {
-        this->MYScore[nc][nf] = NLL();
-        this->MYOffset[nc][nf] = bestx+shiftx; 
-        this->MYOffset[nc][nf] = shiftt0; 
+        double xcp = x_maxP + shiftt0;
+        double xcn = x_minN - shiftt0;
+        if(xcp>abs(xcn))
+        {
+            x_close_anode = xcp;
+        }
+        else
+        {
+            x_close_anode = xcn;
+        }
     }
     
+    this->MYScore[nf][nc] = NLL();
+    this->MYOffset[nf][nc] = bestx;
+    this->MYdeltaT0[nf][nc] = shiftt0;  
+    this->MYcloseAnode[nf][nc] = abs(x_close_anode);  
+    this->MYvisEf[nf][nc] = returnVisEff(qs,shiftt0);
+
     return true;
 }
 
 myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
     double drift_speed, double elec_atenuation, double density, double Efield,
-     phot::PhotonVisibilityService const* PVS, phot::SemiAnalyticalModel const* SAM, bool norm, std::string DetectorZone, std::string type_order, bool fit_mode)
+     phot::PhotonVisibilityService const* PVS, phot::SemiAnalyticalModel const* SAM, bool norm, std::string DetectorZone, std::string typeFit, bool fit_mode)
 {
     this->drift_length = drift_length;
     this->drift_speed = drift_speed;
@@ -480,7 +482,7 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
     this->normPE = norm; 
     this->fDetectorZone = DetectorZone;
     
-    this->type_order = type_order;
+    this->type_fit = typeFit;
     this->fit_mode = fit_mode;
 
     //ZERA o vetor de fit
@@ -490,45 +492,24 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
     this->Nc = qqs.size();
     this->Nf = qfs.size();
 
-    if(type_order=="flash")
-    {
-        this->Nline = this->Nf;
-        this->Ncol = this->Nc;
-    }
-    else
-    {
-        this->Nline = this->Nc;
-        this->Ncol = this->Nf;
-    }
-
-    const double BIG = 1e20; 
+    this->Nline = this->Nf;
+    this->Ncol = this->Nc;
+   
+    const double BIG = 1e8; 
     MYScore.assign(Nline, std::vector<double>(Ncol, BIG));
     MYOffset.assign(Nline, std::vector<double>(Ncol, -100000.0));
     MYdeltaT0.assign(Nline, std::vector<double>(Ncol, -100000.0));
+    MYcloseAnode.assign(Nline, std::vector<double>(Ncol, -100000.0));
+    MYvisEf.assign(Nline, std::vector<double>(Ncol, -100000.0));
 
     this->CH_MAX = fPVS->NOpChannels();
+    direct_visibilities.assign(CH_MAX, 0.0);
 
     //talvez colocar um algoritmo de filtro para filtrar cluster e flashs? --> tipo isso usado no codigo no SBND _alg_tpc_filter->Filter(_tpc_object_v);
     for(nf=0;nf<Nf;nf++)
     {
         for(nc=0;nc<Nc;nc++)
         {
-            if(fDetectorZone=="All")
-            {
-                this->APA = qqs[nc].APA;
-                if(this->APA==6 || this->APA==2 )
-                {
-                    this->fActualDetectorZone = "Positive";
-                }
-                else if(this->APA==5 || this->APA==1 )
-                {
-                    this->fActualDetectorZone = "Negative";
-                }
-                else if(this->APA==-1 )
-                {
-                    this->fActualDetectorZone = "All";
-                }
-            }
             //AQUI testamos se essa dupla eh possivel
             if(this->checkPossibility(&qqs[nc],&qfs[nf]))
             {
@@ -542,4 +523,40 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
 
     this->HR =  hungarian_min(MYScore); // aqui tava comentado, acho que era por isso
   
+}
+
+double myMatch::returnVisEff(const QCluster* qs, const double xoffset)
+{
+    if (!qs) return 100000.0;
+
+    double total = 0.0;
+    double L = qs->Length;
+    if (L <= 0.0) return 100000.0;
+
+    for (size_t pt_index = 0; pt_index < qs->size(); ++pt_index)
+    {
+        const auto& pt = (*qs)[pt_index];
+
+        double x = pt.x;
+        double y = pt.y;
+        double z = pt.z;
+        double pitch = (pt.pitch >= 0.0) ? pt.pitch : 0.0;
+
+        if (pt.APA == 2 || pt.APA == 6)
+            x = pt.x + xoffset;
+        else if (pt.APA == 1 || pt.APA == 5)
+            x = pt.x - xoffset;
+        else
+            continue;
+
+        geo::Point_t point{x, y, z};
+        fSAM->detectedDirectVisibilities(direct_visibilities, point);
+
+        for (int ch = 0; ch < CH_MAX; ++ch)
+        {
+            total += direct_visibilities[ch] * pitch;
+        }
+    }
+
+    return total / L;
 }

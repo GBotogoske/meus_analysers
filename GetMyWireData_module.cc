@@ -28,6 +28,7 @@
 #include <unordered_set>
 #include <vector>
 #include <string>
+#include <memory>
 
 class GetMyWireData : public art::EDAnalyzer
 {
@@ -333,45 +334,62 @@ void GetMyWireData::analyze(art::Event const& e)
     std::vector<art::Ptr<recob::Slice>> slices;
     art::fill_ptr_vector(slices, slice_h);
 
+
+    std::vector<art::Ptr<recob::PFParticle>> allpfps;
+    art::fill_ptr_vector(allpfps, pfp_h);
+
+    std::unordered_map<size_t, art::Ptr<recob::PFParticle>> pfpMap;
+    for (auto const& pfp : allpfps)
+    {
+    if (!pfp.isNull()) pfpMap[pfp->Self()] = pfp;
+    }
+
     for (auto const& sl : slices)
     {
       if (sl.isNull()) continue;
 
       // Hits acumulados do slice (tracks + showers)
       std::vector<art::Ptr<recob::Hit>> hits_sel;
-      std::unordered_set<size_t> seen;
 
       double sumLen = 0.0;
       bool anyObj = false;
 
-      auto pfps = slice_to_pfps.at(sl.key());
-      for (auto const& pfp : pfps)
-      {
-        if (pfp.isNull()) continue;
+      auto seed_pfps = slice_to_pfps.at(sl.key());
+
+        std::unordered_set<size_t> seenPFP;
+        std::unordered_set<size_t> seenHits;
+
+        std::function<void(const art::Ptr<recob::PFParticle>&)> visitPFP;
+        visitPFP = [&](const art::Ptr<recob::PFParticle>& pfp)
+        {
+        if (pfp.isNull()) return;
+
+        const size_t self = pfp->Self();
+        if (!seenPFP.insert(self).second) return;
 
         // tracks do PFP
         auto trks = pfp_to_tracks.at(pfp.key());
         for (auto const& trk : trks)
         {
-          if (trk.isNull()) continue;
-          anyObj = true;
-          sumLen += trk->Length();
+            if (trk.isNull()) continue;
+            anyObj = true;
+            sumLen += trk->Length();
 
-          auto trkHits = fmHits.at(trk.key());
-          for (auto const& h : trkHits)
-          {
+            auto trkHits = fmHits.at(trk.key());
+            for (auto const& h : trkHits)
+            {
             if (h.isNull()) continue;
-            if (!seen.insert(h.key()).second) continue;
+            if (!seenHits.insert(h.key()).second) continue;
             hits_sel.push_back(h);
-          }
+            }
         }
 
-        // showers do PFP (se habilitado e válido)
+        // showers do PFP
         if (pfp_to_showers && fmHitsShower)
         {
-          auto shws = pfp_to_showers->at(pfp.key());
-          for (auto const& shw : shws)
-          {
+            auto shws = pfp_to_showers->at(pfp.key());
+            for (auto const& shw : shws)
+            {
             if (shw.isNull()) continue;
             anyObj = true;
             sumLen += shw->Length();
@@ -379,13 +397,28 @@ void GetMyWireData::analyze(art::Event const& e)
             auto shwHits = fmHitsShower->at(shw.key());
             for (auto const& h : shwHits)
             {
-              if (h.isNull()) continue;
-              if (!seen.insert(h.key()).second) continue;
-              hits_sel.push_back(h);
+                if (h.isNull()) continue;
+                if (!seenHits.insert(h.key()).second) continue;
+                hits_sel.push_back(h);
             }
-          }
+            }
         }
-      }
+
+        // filhas
+        for (size_t dauID : pfp->Daughters())
+        {
+            auto it = pfpMap.find(dauID);
+            if (it != pfpMap.end())
+            {
+            visitPFP(it->second);
+            }
+        }
+        };
+
+        for (auto const& pfp : seed_pfps)
+        {
+        visitPFP(pfp);
+        }
 
       if (!anyObj) continue;
       if (hits_sel.empty()) continue;
