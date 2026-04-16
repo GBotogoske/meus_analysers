@@ -115,6 +115,45 @@ cet_build_plugin(getVis art::module
     larsim::PhotonPropagation_PhotonVisibilityService_service 
 )
 
+cet_build_plugin(CompareSimPhotonsOpHits art::module
+  LIBRARIES
+    larcorealg::Geometry
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    lardataalg::DetectorInfo 
+    art::Framework_Core
+    art::Framework_Principal
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+)
+
+cet_build_plugin(MyFlashMatchingGetClusters art::module
+  LIBRARIES
+    larcorealg::Geometry
+    larcore::Geometry_Geometry_service
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    larsim::PhotonPropagation
+    larsim::PhotonPropagation_PhotonVisibilityService_service 
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    art::Framework_Core
+    art::Framework_Principal
+    larevt::SpaceCharge
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+    duneopdet::OpticalDetector
+    utils
+)
+
 install_headers()
 install_fhicl()
 install_source()

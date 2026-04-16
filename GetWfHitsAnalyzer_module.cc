@@ -24,7 +24,7 @@
 
 #include "lardata/DetectorInfoServices/DetectorClocksService.h"
 
-
+#include "lardataobj/RawData/RDTimeStamp.h"
 
 class GetWfHitsAnalyzer : public art::EDAnalyzer 
 {
@@ -35,7 +35,7 @@ class GetWfHitsAnalyzer : public art::EDAnalyzer
     void beginJob() override;
 
   private:
-    art::InputTag fInputTag;
+    art::InputTag fInputTag, fTriggerLabel;
 
     TTree* fTreeW = nullptr; // Waveforms
     TTree* fTreeH = nullptr; // Hits
@@ -68,6 +68,7 @@ class GetWfHitsAnalyzer : public art::EDAnalyzer
 GetWfHitsAnalyzer::GetWfHitsAnalyzer(fhicl::ParameterSet const& p)
   : EDAnalyzer(p)
 {
+    fTriggerLabel = p.get<std::string>("TriggerTag","daq:trigger:pdhdkeepupstage1");
 }
 
 void GetWfHitsAnalyzer::beginJob() 
@@ -105,12 +106,27 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
 {
         fRun = e.run();
         fEvent = e.event();
+        bool isMC= false;
 
         auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
         std::cout << clockData.TriggerTime() << "--- " << clockData.TriggerOffsetTPC() <<std::endl;
 
         auto wfHandle = e.getHandle<std::vector<raw::OpDetWaveform>>(art::InputTag("pdhddaphne", "daq", "pdhdkeepupstage1"));//(art::InputTag("opdigi", "", "Detsim"));
         auto wfdecHandle = e.getHandle<std::vector<recob::OpWaveform>>(art::InputTag("opdec", "", "myFlash"));
+
+
+        Long64_t triggerTime=0;
+        if(!isMC)
+        {
+            auto hTrigger = e.getHandle<raw::RDTimeStamp>(fTriggerLabel);
+            if(!hTrigger)
+            {
+                std::cout << "No Trigger Time found" << std::endl; 
+                return;
+            }
+            triggerTime =  static_cast<Long64_t>((*hTrigger).GetTimeStamp());
+        }
+
 
         if (!wfHandle || wfHandle->empty()) 
         {
@@ -147,7 +163,7 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
         for (const auto& wf : *wfHandle) 
         {
             fOfflineChannel = wf.ChannelNumber();
-            fTimestamp = wf.TimeStamp();
+            fTimestamp = wf.TimeStamp()-triggerTime;
             fADCValue.assign(wf.begin(), wf.end()); 
 
             auto decPtrs = RawtoDec.at(wfs[i].key());   
@@ -157,9 +173,15 @@ void GetWfHitsAnalyzer::analyze(art::Event const& e)
             // Normalmente vem 1 OpWaveform associado
             auto const& wfdec = *decPtrs.front();
             fOfflineChannel_dec = wfdec.Channel();      
-            fTimestamp_dec      = wfdec.TimeStamp();    
+            fTimestamp_dec      = wfdec.TimeStamp()-triggerTime;    
             std::vector<float> signal_dec = wfdec.Signal();
             fADCValue_dec = signal_dec; 
+
+            if(!isMC)
+            {
+                fTimestamp=fTimestamp*16/1000;
+                fTimestamp_dec=fTimestamp_dec*16/1000;
+            }
             
             fTreeW->Fill();
             

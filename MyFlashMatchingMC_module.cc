@@ -215,12 +215,14 @@ class MyFlashMatchingMC : public art::EDAnalyzer
 
         // helpers
         std::unordered_map<int,double> BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
-                                                    cheat::PhotonBackTrackerService& pbts) const;
+                                                    cheat::PhotonBackTrackerService& pbts,
+                                                    cheat::ParticleInventoryService const& pis) const;
 
         std::unordered_map<int,double> BuildTrackMap(detinfo::DetectorClocksData const& clockData,
                                                      detinfo::DetectorPropertiesData const& detProp,
                                                     std::vector<art::Ptr<recob::Hit>> const& hits,
-                                                    cheat::BackTrackerService const& bts) const;
+                                                    cheat::BackTrackerService const& bts,
+                                                    cheat::ParticleInventoryService const& pis) const;
 
 
         double limitMinFlash = 0.0;
@@ -308,7 +310,7 @@ void MyFlashMatchingMC::beginJob()
 }
 
 std::unordered_map<int,double> MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
-                                 cheat::PhotonBackTrackerService& pbts) const
+                                 cheat::PhotonBackTrackerService& pbts,cheat::ParticleInventoryService const& pis) const
 {
     std::unordered_map<int,double> w;
     for (auto const& oph : ophits) //vare os hits
@@ -331,9 +333,17 @@ std::unordered_map<int,double> MyFlashMatchingMC::BuildFlashMap(std::vector<art:
         // distribui o PE do hit proporcional ao numPhotons por trackID
         for (auto const* sdp : sdps) //varre todos os pontos de cintilacao
         {
+            int tid;
             if (!sdp) continue;
-            int tid = AbsTID(sdp->trackID);
-            if (tid == 0) continue;
+            if(sdp->trackID!=0)
+            {
+                tid = abs(pis.TrackIdToEveTrackId(abs(sdp->trackID)));   //AbsTID(sdp->trackID);
+                if (tid < 0) continue;
+            }
+            else
+            {
+                continue;
+            }
             
             double frac=0.0;
             if(totPhot>0) frac = std::max(0.f, sdp->numPhotons) / totPhot;
@@ -348,7 +358,7 @@ std::unordered_map<int,double> MyFlashMatchingMC::BuildFlashMap(std::vector<art:
 std::unordered_map<int,double> MyFlashMatchingMC::BuildTrackMap(detinfo::DetectorClocksData const& clockData,
                                 detinfo::DetectorPropertiesData const& detProp,
                                 std::vector<art::Ptr<recob::Hit>> const& hits,
-                                cheat::BackTrackerService const& bts) const
+                                cheat::BackTrackerService const& bts,cheat::ParticleInventoryService const& pis) const
 {
 
     std::unordered_map<int,double> w;
@@ -368,8 +378,16 @@ std::unordered_map<int,double> MyFlashMatchingMC::BuildTrackMap(detinfo::Detecto
         auto ides = bts.HitToTrackIDEs(clockData, h); // le todos os tracks G4 ID que contribuiram para esse hit
         for (auto const& ide : ides)
         {
-            int tid = AbsTID(ide.trackID);
-            if (tid == 0) continue;
+            int tid;
+            if(ide.trackID!=0)
+            {
+                tid = abs(pis.TrackIdToEveTrackId(abs(ide.trackID)));   //AbsTID(sdp->trackID);
+                if (tid == 0) continue;
+            }
+            else
+            {
+                continue;
+            }
             w[tid] += ide.energy; // peso físico no TPC
         }
     }
@@ -440,7 +458,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         if(DetectorZone=="Negative") pass = pass && (flash2>limitMinFlashSide);
         if(!pass) continue;
         //-------------------------------------------------------------------------------------------------------
-        auto wF = BuildFlashMap(ophits, pbts); // construi o mapa para esse flash
+        auto wF = BuildFlashMap(ophits, pbts , pis); // construi o mapa para esse flash
         if (wF.empty()) continue;
         nFTotal++;
         Normalize(wF); // normaliza para soma 1
@@ -667,7 +685,6 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
                         hits_sel.push_back(h);
                     }
                 }
-
                 // Showers associados a este PFP
                 if (getShowers && pfp_to_showers && fmHitsShower)
                 {
@@ -712,7 +729,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
             hits = std::move(hits_sel);
         }
      
-        auto wT = BuildTrackMap(clockData, detProp, hits, bts); //consturi o mapa
+        auto wT = BuildTrackMap(clockData, detProp, hits, bts ,pis); //consturi o mapa
         if (wT.empty()) continue;
         nTtotal++;     
         Normalize(wT); // normaliza para soma 1

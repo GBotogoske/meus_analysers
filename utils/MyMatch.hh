@@ -7,7 +7,13 @@
 #include "larsim/PhotonPropagation/PhotonVisibilityService.h"
 #include "larsim/PhotonPropagation/OpticalPathTools/OpticalPath.h"
 #include "larsim/PhotonPropagation/SemiAnalyticalModel.h"
+
+
 #include <map>
+
+namespace spacecharge {
+  class SpaceCharge;
+}
 
 class myMatch
 {
@@ -15,7 +21,11 @@ class myMatch
         myMatch();
         myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
             double drift_speed, double elec_atenuation, double density, double Efield, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
-             bool norm=false, std::string DetectorZone = "All", std::string typeFit = "flash", bool fit_mode=true);
+            const std::vector<double>& eff, double XTalk = 0.0, bool norm=false, std::string DetectorZone = "All", std::string typeFit = "flash", bool fit_mode=true);
+        myMatch(double drift_length, double drift_speed, double elec_atenuation, double density, double Efield, 
+            phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
+            const std::vector<double>& eff, std::vector<double>& XTalk, std::vector<int>& CHActive, 
+            bool fuseSCE, spacecharge::SpaceCharge const* sce_service);
         ~myMatch();
 
         int Nc;
@@ -26,11 +36,19 @@ class myMatch
 
         bool fit_mode=true;
 
-        bool checkPossibility(const QCluster* qs,const  QFlash* qf);
+        bool checkPossibility(const QCluster* qs,const  QFlash* qf, double time_buffer=300);
         bool startFlash(const QCluster* qs,const  QFlash* qf);
 
         double returnVisEff(const QCluster* qs, double xoffset);
-        
+        double returnVisEff(const QCluster* qs, const QFlash* qf, const double xoffset);
+        std::vector<double> returnVisEffCh(const QCluster* qs, const QFlash* qf, const double xoffset);
+        std::vector<double> returndCh(const QCluster* qs,const double xoffset,const std::vector<double>& xch,const std::vector<double>& ych,const std::vector<double>& zch);
+        double returnVisEff();
+        std::vector<double> returnVisEffCh();
+        std::vector<double> returndCh(const std::vector<double>& xch,const std::vector<double>& ych,const std::vector<double>& zch);
+
+        void fixPositionSce();
+
         double drift_length;
         double drift_speed;
         double elec_atenuation;
@@ -62,6 +80,7 @@ class myMatch
         QCluster cluster_fit;
         phot::PhotonVisibilityService const* fPVS;
         phot::SemiAnalyticalModel const* fSAM;
+        const spacecharge::SpaceCharge* fSCE = nullptr;
 
         struct HungarianResult HR;
 
@@ -76,7 +95,13 @@ class myMatch
         std::map<int,int> ch_max_map = {{1,159}, {2,79}, {5,119}, {6,39}};
 
         std::vector<double> direct_visibilities;
+        std::vector<double> effVector;
+        std::vector<double> XtalkVector;
+        std::vector<int> CHActiveVector;
 
+        double Xtalk;
+        double Kdup;
+        bool useSCE = false;
 
 };
 

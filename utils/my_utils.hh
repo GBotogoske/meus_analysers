@@ -9,6 +9,7 @@
 #include <queue>
 #include <stdexcept>
 
+#include "Rtypes.h"
 
 class QPoint
 {
@@ -16,7 +17,7 @@ class QPoint
         QPoint()
         {
         }
-        QPoint(double x0,double y0,double z0, double q0, double pitch0 = 0.0, double APA0=-1)
+        QPoint(double x0,double y0,double z0, double q0, double dirx0,double diry0,double dirz0, double pitch0 = 0.0, double APA0=-1)
         {
             x=x0;
             y=y0;
@@ -24,9 +25,13 @@ class QPoint
             q=q0;
             pitch=pitch0;
             APA=APA0;
+            dirx=dirx0;
+            diry=diry0;
+            dirz=dirz0;
         }
-        ~QPoint() {}
-        double x,y,z,q,pitch,APA;
+        virtual ~QPoint() = default;
+        double x,y,z,q,pitch,APA,dirx,diry,dirz;
+        ClassDef(QPoint, 1);
 };
 
 class QCluster : public std::vector<QPoint>
@@ -37,11 +42,13 @@ class QCluster : public std::vector<QPoint>
         int APA = 0;
 
         double Length = 0.0;
+        double Charge=0.0;
 
         QCluster() = default;
+        virtual ~QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length), Charge(other.Charge)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -53,6 +60,7 @@ class QCluster : public std::vector<QPoint>
                 type = other.type;
                 APA = other.APA;
                 Length = other.Length;
+                Charge = other.Charge;
             }
             return *this;
         }
@@ -68,6 +76,7 @@ class QCluster : public std::vector<QPoint>
             }
             return qT;
         }
+        ClassDef(QCluster, 1);
 };
 
 
@@ -76,13 +85,15 @@ class QFlash
 public:
     QFlash() = default;
     QFlash(const QFlash& qflash) = default;
-    ~QFlash() = default;
+    virtual ~QFlash() = default;
 
     int flashID = -1;
     std::vector<double> PE_CH;
 
     double y = 0.0, z = 0.0, x=0.0, y_err = 0.0, z_err = 0.0;
     double time = 0.0, time_err = 0.0;
+    int NCh_active=0;
+    double Light=0.0;
 
     void norm_this_flash()
     {
@@ -102,6 +113,7 @@ public:
         }
         return qT;
     }
+    ClassDef(QFlash, 1);
 };
 
 static inline bool isZero(double x, double eps=1e-12)

@@ -2,8 +2,14 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(ROOT REQUIRED COMPONENTS Minuit)
 
+# Em alguns setups isso já vem do projeto pai.
+# Se ROOT_GENERATE_DICTIONARY não for reconhecido, descomente:
+include(${ROOT_USE_FILE})
+
+
 add_library(utils STATIC
     MyMatch.cc
+    my_utils.cxx
 )
 
 # Caminho de includes para QUEM USA a lib
@@ -19,13 +25,22 @@ target_link_libraries(utils
         ROOT::Minuit
         larsim::PhotonPropagation
         larsim::PhotonPropagation_PhotonVisibilityService_service
+        larevt::SpaceCharge
         duneopdet::OpticalDetector 
+)
+
+
+ROOT_GENERATE_DICTIONARY(utilsDict
+    my_utils.hh
+    LINKDEF MyUtilsLinkDef.h
+    MODULE utils
 )
 
 # Instala headers
 install(FILES
     MyMatch.hh
     my_utils.hh
+    MyUtilsLinkDef.h
     DESTINATION include/my_dune/utils
 )
 
