@@ -23,6 +23,7 @@
 #include "lardataobj/RecoBase/OpHit.h"
 #include "lardataobj/RecoBase/SpacePoint.h"
 #include "lardataobj/RawData/RDTimeStamp.h"
+#include "lardataobj/RecoBase/TrackHitMeta.h"
 
 #include "larcore/Geometry/Geometry.h"
 #include "larcore/CoreUtils/ServiceUtil.h"
@@ -62,10 +63,10 @@
 #include "larevt/SpaceChargeServices/SpaceChargeService.h"
 
 
-class MyFlashMatchingGetClusters : public art::EDAnalyzer
+class MyFlashMatchingGetClustersEfield : public art::EDAnalyzer
  {
     public:
-        explicit MyFlashMatchingGetClusters(fhicl::ParameterSet const& p);
+        explicit MyFlashMatchingGetClustersEfield(fhicl::ParameterSet const& p);
 
         void beginJob() override;
         void analyze(art::Event const& e) override;
@@ -117,17 +118,23 @@ class MyFlashMatchingGetClusters : public art::EDAnalyzer
         double fvis;
 
         double drift_length;
-        double drift_speed;
+        double drift_speed,drift_speed_std;
         double electronlife;
         double W_LAr;
         double density;
-        double Efield;
+        double Efield,Efield_std;
 
         double gain_factor=1.0;
 
-        void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId, int const& typeObj );
+        void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, art::FindManyP<recob::Hit, recob::TrackHitMeta> const& trk_to_hit_meta,int const& thisId, int const& typeObj );
         //void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj );
         void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj );
+
+
+        bool getCorrectedDirectionFromIndex(art::Ptr<recob::Track> const& trk,int indp,double scalev,float& dirx,float& diry,float& dirz,
+            double& stretch,double& ux,double& uy,double& uz) const;
+
+        int findClosestValidTrackPoint(art::Ptr<recob::Track> const& trk,double x,double y,double z) const;
 
         std::vector<QCluster> getQClustersSlices(art::Event const& e); // esse aqui eh por slice
         std::vector<QCluster> getQClustersPFPs(art::Event const& e); // esse aqui eh por slice
@@ -159,9 +166,14 @@ class MyFlashMatchingGetClusters : public art::EDAnalyzer
 
         double ftriggerTime = 0.0;
 
+        std::vector<int> run_list;
+        std::vector<double> E_list;
+        std::vector<double> v_list;
+
+
 };
 
-MyFlashMatchingGetClusters::MyFlashMatchingGetClusters(fhicl::ParameterSet const& p)
+MyFlashMatchingGetClustersEfield::MyFlashMatchingGetClustersEfield(fhicl::ParameterSet const& p)
   : EDAnalyzer{p}
 {
     //seta os labels para ler os produtos
@@ -274,9 +286,13 @@ MyFlashMatchingGetClusters::MyFlashMatchingGetClusters(fhicl::ParameterSet const
         zch[channel]=c.Z();
     }  
     
+    run_list = p.get<std::vector<int>>("run_list",std::vector<int>(1,1));
+    E_list = p.get<std::vector<double>>("E_list",std::vector<double>(1,0.5));
+    v_list = p.get<std::vector<double>>("v_list",std::vector<double>(1,0.16));
+
 }
 
-void MyFlashMatchingGetClusters::beginJob()
+void MyFlashMatchingGetClustersEfield::beginJob()
 {
     art::ServiceHandle<art::TFileService> tfs;
 
@@ -307,7 +323,7 @@ void MyFlashMatchingGetClusters::beginJob()
     
 }
 
-void MyFlashMatchingGetClusters::analyze(art::Event const& e)
+void MyFlashMatchingGetClustersEfield::analyze(art::Event const& e)
 {
     run    = e.id().run();
     event  = e.id().event();
@@ -324,6 +340,18 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
     this->density = det_prop.Density();
     this->Efield = det_prop.Efield();
 
+    this->Efield_std=this->Efield;
+    this->drift_speed_std=this->drift_speed;
+
+    for (size_t i = 0; i < run_list.size(); ++i)
+    {
+        if(run_list[i]==run)
+        {
+            drift_speed=v_list[i];
+            this->Efield=E_list[i];
+        }
+    }
+    std::cout << "run := " << run << std::endl;
     std::cout << "electron vd := " << drift_speed << std::endl;
     std::cout << "electron lifetime:=  " << electronlife << std::endl;
     std::cout << "W LAr :=  " << W_LAr << std::endl;
@@ -340,7 +368,7 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
 
     if (QClusters.empty() || QFlashs.empty()) 
     {
-        mf::LogWarning("MyFlashMatchingGetClusters")
+        mf::LogWarning("MyFlashMatchingGetClustersEfield")
             << "Skipping event " << e.id()
             << " because clusters or flashes are missing/empty.";
         return;
@@ -379,10 +407,9 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
                 match_operator->ChargeHypothesis(deltax_T0);
                 fFlash_fit=match_operator->flash_fit;
                 fCluster_fit = match_operator->cluster_fit;
+                fFlash_fit.Light = fFlash_fit.TotalLight();
                 fCluster_fit.Charge = match_operator->save_charge;
                 fCluster_fit.Length = fCluster_fit.calcLength();
-                fCluster_fit.Energy = fCluster_fit.TotalEnergy();
-                fFlash_fit.Light = fFlash_fit.TotalLight();
                 fvis = match_operator->returnVisEff();
                 LYCH =  match_operator->returnVisEffCh();
                 dch = match_operator->returndCh(xch,ych,zch);
@@ -394,7 +421,7 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
     delete match_operator;
 }
 
-void MyFlashMatchingGetClusters::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId,int const& typeObj )
+void MyFlashMatchingGetClustersEfield::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, art::FindManyP<recob::Hit, recob::TrackHitMeta> const& trk_to_hit_meta, int const& thisId,int const& typeObj )
 {
     std::vector<art::Ptr<anab::Calorimetry>> calos = trk_to_calo.at(trk.key());
    
@@ -452,78 +479,162 @@ void MyFlashMatchingGetClusters::returnQCluster(QCluster& this_qlight, art::Ptr<
     
     if(ob_APA != 1 && ob_APA != 2 && ob_APA != 5 && ob_APA != 6) return;
 
-    //if(ob_APA==1) return; // to tirando o apa1, pode colocar dpeois se quiser
+    if(ob_APA==1) return; // to tirando o apa1, pode colocar dpeois se quiser
 
     //------------------------- termino de buscar o plano -------------------------------------------------------------------
     
-    auto const& dEdx_v  = calo->dEdx();
-    auto const& dADCdx_v = calo->dQdx();
-    auto const& pitch_v = calo->TrkPitchVec();
-    auto const& pos_v   = calo->XYZ();
+    auto const& dEdx_v     = calo->dEdx();
+    auto const& dADCdx_v   = calo->dQdx();
+    auto const& pitch_v    = calo->TrkPitchVec();
+    auto const& pos_v      = calo->XYZ();
     auto const& indexpoints = calo->TpIndices();
 
-    // create vector of e- instead of ADC units
-    std::vector<float> dQdx_v(dADCdx_v.size(),0);
-    for (size_t s = 0; s < dADCdx_v.size(); s++)
+    const double scalev = drift_speed / drift_speed_std;
+
+    // Usa só o tamanho comum para não acessar vetor fora do range
+    size_t npts = dEdx_v.size();
+    npts = std::min(npts, dADCdx_v.size());
+    npts = std::min(npts, pitch_v.size());
+    npts = std::min(npts, pos_v.size());
+
+    if (npts == 0) return;
+
+    std::unordered_map<int, int> hitKeyToTrajIndex;
+
+    if (trk_to_hit_meta.isValid())
     {
-        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane))*gain_factor;
+        auto trkHits  = trk_to_hit_meta.at(trk.key());
+        auto trkMetas = trk_to_hit_meta.data(trk.key());
+
+        size_t nAssoc = std::min(trkHits.size(), trkMetas.size());
+
+        for (size_t ih = 0; ih < nAssoc; ++ih)
+        {
+            if (trkHits[ih].isNull()) continue;
+            if (trkMetas[ih] == nullptr) continue;
+
+            int hitKey = static_cast<int>(trkHits[ih].key());
+
+            auto idx = trkMetas[ih]->Index();
+
+            if (idx < trk->NumberTrajectoryPoints() && trk->HasValidPoint(idx))
+            {
+                hitKeyToTrajIndex[hitKey] = static_cast<int>(idx);
+            }
+        }
+    }
+
+    // Define o plano de anodo/cátodo desse APA
+    double xAPA = 0.0;
+
+    if (ob_APA == 2 || ob_APA == 6) { xAPA = +drift_length;}
+    else if (ob_APA == 1 || ob_APA == 5) { xAPA = -drift_length; }
+    else {return;}
+
+    // create vector of e- instead of ADC units
+    std::vector<float> dQdx_v(npts, 0.0);
+
+    for (size_t s = 0; s < npts; s++)
+    {
+        dQdx_v[s] = dADCdx_v[s] * (1.0 / _cal_area_const.at(plane)) * gain_factor;
     }
 
     //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
     //varre todas as posicoes/energia depositadas
-    for (size_t s = 0; s < dEdx_v.size(); s++)
+    for (size_t s = 0; s < npts; s++)
     {
         float x = pos_v[s].X();
         float y = pos_v[s].Y();
         float z = pos_v[s].Z();
 
-        float dirx = -1;
-        float diry = -1;
-        float dirz = -1;
+        x = xAPA + scalev * (x - xAPA);
+        // ----------------------------
+        // Direção
+        // ----------------------------
+        float dirx = 0.0;
+        float diry = 0.0;
+        float dirz = 0.0;
+
+        double stretch = 1.0;
+        bool validDir = false;
+
+        double ux = 0.0;
+        double uy = 0.0;
+        double uz = 0.0;
+
+        int indp = -1;
+
+        // 1) Primeiro usa TpIndices como HIT KEY
         if (s < indexpoints.size())
         {
-            int indp = indexpoints[s];
-            if(indp>=0)
+            int hitKey = indexpoints[s];
+
+            auto it = hitKeyToTrajIndex.find(hitKey);
+
+            if (it != hitKeyToTrajIndex.end())
             {
-                if(trk->HasValidPoint(indp))
-                {
-                    auto const& dir_v = trk->DirectionAtPoint(indp);
-                    dirx = dir_v.X();
-                    diry = dir_v.Y();
-                    dirz = dir_v.Z();
-                }
+                indp = it->second;
             }
         }
 
-        if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
+        // 2) Se não achou via TrackHitMeta, usa fallback geométrico
+        if (indp < 0)
         {
+            indp = findClosestValidTrackPoint(
+                trk,
+                pos_v[s].X(),
+                pos_v[s].Y(),
+                pos_v[s].Z()
+            );
+        }
+
+        // 3) Calcula direção corrigida
+        validDir = getCorrectedDirectionFromIndex(trk,indp,scalev,dirx,diry,dirz,stretch,ux,uy,uz);
+        // ----------------------------
+        // Corte por lado depois da correção de x
+        // ----------------------------
+        if (DetectorZone == "Positive" && x < 0) {
             continue;
         }
-        else if(DetectorZone == "Negative" && x>0) // so pegar as posicoes com x negativo
-        {
+        else if (DetectorZone == "Negative" && x > 0) {
             continue;
-        }  
-        //double drift_time = (drift_length - abs(x))/(drift_speed); //
-        //double atten_corr = std::exp(drift_time/electronlife); //
-
-        float pitch;
-        float dQ;//, dE;
-        //float nphotons;
-
-        //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
-        if(true)//valores normais (depois tenho que fazer o outro caso)
-        {
-            pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
-            dQ = dQdx_v[s]; // * pitch * atten_corr; // corigido pelo drift
-            /* dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
-            nphotons = dE/(W_LAr*1e-6) - dQ;
-            nphotons = std::max(0.0f, nphotons); */    
         }
-        else
+
+        // ----------------------------
+        // Pitch e carga
+        // ----------------------------
+        float pitch = -1.0;
+        float dQdx_corr = -1.0;
+
+        if (s < pitch_v.size() && s < dQdx_v.size())
         {
-            //aqui depois colocamos os valores estranhos
+            float pitch_old = pitch_v[s];
+
+            if (pitch_old > 0.0 && validDir)
+            {
+                /* std::cout << "######### TRACK Entrei  #########"<<std::endl; */
+                pitch = pitch_old * stretch;
+
+                // Se dQdx_v[s] é carga por unidade de comprimento,
+                // então a carga total do segmento deve ser preservada:
+                //
+                // dQ_old = dQdx_old * pitch_old
+                // dQdx_new = dQ_old / pitch_new
+                //
+                dQdx_corr = dQdx_v[s] * pitch_old / pitch;
+            }
+            else
+            {
+                // fallback: sem correção geométrica
+                pitch = pitch_old;
+                dQdx_corr = dQdx_v[s];
+            }
         }
-        this_qlight.push_back(QPoint(x,y,z,dQ,dirx,diry,dirz,pitch,ob_APA));
+        /* std::cout << "######### TRACK  #########"<<std::endl;
+        std::cout << ux << " " << uy << " " << uz << " " << scalev << std::endl; 
+        std::cout << dirx << " " << diry << " " << dirz << " " << stretch << std::endl;
+        std::cout << "##################"<<std::endl; */
+        this_qlight.push_back(QPoint(x, y, z, dQdx_corr, dirx, diry, dirz, pitch, ob_APA));
         //this_qlight.push_back(QPoint(x,y,z,nphotons));
     }
     this_qlight.objID = thisId;
@@ -531,7 +642,7 @@ void MyFlashMatchingGetClusters::returnQCluster(QCluster& this_qlight, art::Ptr<
     this_qlight.APA = ob_APA;
 }
 
-void MyFlashMatchingGetClusters::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj )
+void MyFlashMatchingGetClustersEfield::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj )
 {
     std::vector<art::Ptr<anab::Calorimetry>> calos = shw_to_calo.at(shw.key());
     //vetores para salvar as informacoes
@@ -593,7 +704,7 @@ void MyFlashMatchingGetClusters::returnQClusterShower(QCluster& this_qlight, art
     //std::cout << ob_APA << std::endl;
     //std::cout << "#NHITSCALOR_SHOWERS: " <<  maxSize << " --- " << ob_APA << std::endl ;
     if(ob_APA != 1 && ob_APA != 2 && ob_APA != 5 && ob_APA != 6) return;
-    //if(ob_APA==1) return; // to tirando o apa1, pode colocar dpeois se quiser
+    if(ob_APA==1) return; // to tirando o apa1, pode colocar dpeois se quiser
     //std::cout << "Passou "<<std::endl << "------------------" <<std::endl;
     
     //------------------------- termino de buscar o plano -------------------------------------------------------------------
@@ -616,12 +727,58 @@ void MyFlashMatchingGetClusters::returnQClusterShower(QCluster& this_qlight, art
         float x = pos_v[s].X();
         float y = pos_v[s].Y();
         float z = pos_v[s].Z();
+        const double scalev = drift_speed / drift_speed_std;
 
+        // ----------------------------
+        // Corrige coordenada x
+        // ----------------------------
+        double xAPA = 0.0;
+        bool validAPA = true;
+
+        if (ob_APA == 2 || ob_APA == 6) {
+            xAPA = +drift_length;
+        }
+        else if (ob_APA == 1 || ob_APA == 5) {
+            xAPA = -drift_length;
+        }
+        else {
+            validAPA = false;
+        }
+
+        if (validAPA) {
+            x = xAPA + scalev * (x - xAPA);
+        }
+
+        // Direção do shower
         const auto& dir = shw->Direction();
-        float dirx = dir.X();
-        float diry = dir.Y();
-        float dirz = dir.Z();
-        
+
+        double ux = dir.X();
+        double uy = dir.Y();
+        double uz = dir.Z();
+
+        float dirx = -1.0;
+        float diry = -1.0;
+        float dirz = -1.0;
+
+        double stretch = 1.0;
+        bool validDir = false;
+
+        // Aplica a deformação em x
+        double vx = scalev * ux;
+        double vy = uy;
+        double vz = uz;
+
+        stretch = std::sqrt(vx*vx + vy*vy + vz*vz);
+
+        if (stretch > 0.0)
+        {
+            dirx = vx / stretch;
+            diry = vy / stretch;
+            dirz = vz / stretch;
+
+            validDir = true;
+        }
+             
         if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
         {
             continue;
@@ -633,27 +790,35 @@ void MyFlashMatchingGetClusters::returnQClusterShower(QCluster& this_qlight, art
         //double drift_time = (drift_length - abs(x))/(drift_speed); //
         //double atten_corr = std::exp(drift_time/electronlife); //
 
-        float pitch;
-        float dQ;//, dE;
-        //float nphotons;
+        float pitch = -1.0;
+        float q_corr = -1.0;
 
-        //NESTA PARTE O CODIGO DO SBND SEPARA EM 2 PARTES (VALORES NORMAIS E ESTRANHOS)
-        if(true)//valores normais (depois tenho que fazer o outro caso)
+        if (s < pitch_v.size() && s < dQdx_v.size())
         {
-            pitch = (s < pitch_v.size()) ? pitch_v[s] : -1;
-            dQ = dQdx_v[s];// * pitch * atten_corr; // corigido pelo drift
-            /* dE = dEdx_v[s] * pitch; // talvez precise corrigir pelo drfit, de uma olhada na fcl de reconstrucao depois ...
-            nphotons = dE/(W_LAr*1e-6) - dQ;
-            nphotons = std::max(0.0f, nphotons); */
-            
+            float pitch_old = pitch_v[s];
+
+            if (pitch_old > 0.0 && validDir)
+            {
+                //std::cout << "######### Shower Entrei  #########"<<std::endl;
+                pitch = pitch_old * stretch;
+
+                // Se dQdx_v[s] é dQ/dx, preserve a carga total:
+                // dQ_total = dQdx_old * pitch_old
+                // dQdx_new = dQ_total / pitch_new
+                q_corr = dQdx_v[s] * pitch_old / pitch;
+            }
+            else
+            {
+                pitch = pitch_old;
+                q_corr = dQdx_v[s];
+            }
         }
-        else
-        {
-            //aqui depois colocamos os valores estranhos
-        }
-        this_qlight.push_back(QPoint(x,y,z,dQ,dirx,diry,dirz,pitch,ob_APA));
+       /*  std::cout << "######### SHOWER  #########"<<std::endl;
+        std::cout << ux << " " << uy << " " << uz << " " << scalev << std::endl; 
+        std::cout << dirx << " " << diry << " " << dirz << " " << stretch << std::endl;
+        std::cout << "##################"<<std::endl; */
+        this_qlight.push_back(QPoint(x,y,z,q_corr,dirx,diry,dirz,pitch,ob_APA));
         //this_qlight.push_back(QPoint(x,y,z,nphotons));
-        
     }
     this_qlight.objID = thisId;
     this_qlight.type = typeObj;
@@ -662,11 +827,11 @@ void MyFlashMatchingGetClusters::returnQClusterShower(QCluster& this_qlight, art
 
 //eu vi que para cosmics eh melhor fazer match diretamente com track/PFParticle em vez de slices ( muito quebrado para cosmics )
 
-std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event const& e)
+std::vector<QCluster> MyFlashMatchingGetClustersEfield::getQClustersSlices(art::Event const& e)
 {
     auto slice_h = e.getHandle<std::vector<recob::Slice>>(fSliceLabel);
     if (!slice_h) {
-        mf::LogWarning("MyFlashMatchingGetClusters")
+        mf::LogWarning("MyFlashMatchingGetClustersEfield")
             << "Slice product not found: " << fSliceLabel
             << " ; skipping event " << e.id();
         return {};
@@ -678,6 +843,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
     art::FindManyP<recob::PFParticle>  slice_to_pfps(slice_h, e, fSliceLabel);
     art::FindManyP<recob::Track>       pfp_to_tracks(pfp_h, e, fTrackLabel);
     art::FindManyP<anab::Calorimetry>  trk_to_calo(track_h, e, fCaloLabel);
+    art::FindManyP<recob::Hit, recob::TrackHitMeta> fmHits(track_h, e, fTrackLabel);
 
     art::Handle<std::vector<recob::Shower>> shower_h;
     std::optional<art::FindManyP<recob::Shower>> pfp_to_showers;
@@ -695,7 +861,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
         }
         else
         {
-            mf::LogWarning("MyFlashMatchingGetClusters")
+            mf::LogWarning("MyFlashMatchingGetClustersEfield")
                 << "getShowers=true, but Shower handle is invalid for label " << fShowerLabel;
         }
     }
@@ -750,7 +916,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
                 if (trk->Length() < 0.0) continue;
 
                 size_t nBefore = this_qlight.size();
-                returnQCluster(this_qlight, trk, trk_to_calo, sl->ID(), 3);
+                returnQCluster(this_qlight, trk, trk_to_calo, fmHits, sl->ID(), 3);
 
                 if (this_qlight.size() > nBefore)
                 {
@@ -815,7 +981,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
 }
 
 
-std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersPFPs(art::Event const& e)
+std::vector<QCluster> MyFlashMatchingGetClustersEfield::getQClustersPFPs(art::Event const& e)
 {
    
     // pegar produtos importantes
@@ -827,6 +993,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersPFPs(art::Event co
     art::FindManyP<recob::Track> pfp_to_tracks(pfp_h, e, fTrackLabel); // pega a associacao de tracks das PFParticles
     art::FindManyP<anab::Calorimetry> trk_to_calo(track_h, e, fCaloLabel); // pega as info de calorimetria dos tracks
 
+    art::FindManyP<recob::Hit, recob::TrackHitMeta> fmHits(track_h, e, fTrackLabel);
     std::vector<QCluster> QLigths;
     
     std::vector<art::Ptr<recob::PFParticle>> pfps;
@@ -849,7 +1016,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersPFPs(art::Event co
         {
             if(trk->Length() >= trackLength)
             {
-                returnQCluster(this_qlight,trk,trk_to_calo, pfp->Self(),2); 
+                returnQCluster(this_qlight, trk, trk_to_calo, fmHits, pfp->Self(), 2);
             }
         }
         if(this_qlight.size()>0)
@@ -860,7 +1027,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersPFPs(art::Event co
     return QLigths;
 }
 
-std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event const& e)
+std::vector<QCluster> MyFlashMatchingGetClustersEfield::getQClustersTracks(art::Event const& e)
 { 
     // pegar produtos importantes
     auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel); // tracks
@@ -878,7 +1045,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event 
     art::fill_ptr_vector(tracks, track_h);
     auto nTracks = tracks.size();
 
-    art::FindManyP<recob::Hit> fmHits(track_h, e, fTrackLabel);
+    art::FindManyP<recob::Hit, recob::TrackHitMeta> fmHits(track_h, e, fTrackLabel);
     if (!fmHits.isValid()) 
     {
       mf::LogWarning("GetMyWireData") << "No Track<->Hit assns for " << fTrackLabel << std::endl;  
@@ -917,7 +1084,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event 
 
         if(trk->Length() >= trackLength)
         {
-            returnQCluster(this_qlight,trk,trk_to_calo,trk->ID(),0);
+            returnQCluster(this_qlight, trk, trk_to_calo, fmHits, trk->ID(), 0);
             this_qlight.Length = trk->Length();
             this_qlight.Charge = this_qlight.TotalCharge();
         }
@@ -996,7 +1163,7 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event 
     return QLigths;
 }
 
-std::vector<QFlash> MyFlashMatchingGetClusters::getFlashs(art::Event const& e)
+std::vector<QFlash> MyFlashMatchingGetClustersEfield::getFlashs(art::Event const& e)
 {
     //aqui vamos pegar os flashs
     std::vector<art::Ptr<recob::OpFlash> > flashlist;
@@ -1009,7 +1176,7 @@ std::vector<QFlash> MyFlashMatchingGetClusters::getFlashs(art::Event const& e)
     }
     else 
     {
-      mf::LogWarning("MyFlashMatchingGetClusters") << "Cannot load any flashes. Failing";
+      mf::LogWarning("MyFlashMatchingGetClustersEfield") << "Cannot load any flashes. Failing";
       return {};
     }
     art::FindManyP<recob::OpHit> OpHits_from_Flashs(FlashHandle, e, fFlashLabel);
@@ -1112,5 +1279,64 @@ std::vector<QFlash> MyFlashMatchingGetClusters::getFlashs(art::Event const& e)
     return QFlashs;
 }
 
+bool MyFlashMatchingGetClustersEfield::getCorrectedDirectionFromIndex(art::Ptr<recob::Track> const& trk, int indp,double scalev, float& dirx, float& diry,float& dirz,
+    double& stretch, double& ux,double& uy,double& uz) const
+{
+    if (indp < 0) return false;
+    if (!trk->HasValidPoint(indp)) return false;
 
-DEFINE_ART_MODULE(MyFlashMatchingGetClusters)
+    auto const& dir_v = trk->DirectionAtPoint(indp);
+
+    ux = dir_v.X();
+    uy = dir_v.Y();
+    uz = dir_v.Z();
+
+    double norm = std::sqrt(ux*ux + uy*uy + uz*uz);
+
+    if (norm <= 0.0 || !std::isfinite(norm)) return false;
+
+    // Normaliza a direção original por segurança
+    ux /= norm;
+    uy /= norm;
+    uz /= norm;
+
+    stretch = std::sqrt(scalev*scalev*ux*ux + uy*uy + uz*uz);
+
+    if (stretch <= 0.0 || !std::isfinite(stretch)) return false;
+
+    dirx = scalev * ux / stretch;
+    diry = uy / stretch;
+    dirz = uz / stretch;
+
+    return true;
+}
+
+int MyFlashMatchingGetClustersEfield::findClosestValidTrackPoint( art::Ptr<recob::Track> const& trk,double x,double y,double z) const
+{
+    int bestIndex = -1;
+    double bestDist2 = 1.0e30;
+
+    for (size_t i = 0; i < trk->NumberTrajectoryPoints(); ++i)
+    {
+        if (!trk->HasValidPoint(i)) continue;
+
+        auto const& p = trk->LocationAtPoint(i);
+
+        double dx = p.X() - x;
+        double dy = p.Y() - y;
+        double dz = p.Z() - z;
+
+        double dist2 = dx*dx + dy*dy + dz*dz;
+
+        if (dist2 < bestDist2)
+        {
+            bestDist2 = dist2;
+            bestIndex = static_cast<int>(i);
+        }
+    }
+
+    return bestIndex;
+}
+
+
+DEFINE_ART_MODULE(MyFlashMatchingGetClustersEfield)

@@ -59,6 +59,9 @@
 #include "mydune/utils/my_utils.hh"
 #include "mydune/utils/MyMatch.hh"
 
+#include "larevt/SpaceCharge/SpaceCharge.h"
+#include "larevt/SpaceChargeServices/SpaceChargeService.h"
+
 
 class MyFlashMatching : public art::EDAnalyzer
  {
@@ -112,6 +115,8 @@ class MyFlashMatching : public art::EDAnalyzer
 
         int nOPdet;
 
+        double gain_factor=1.0;
+
         void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId, int const& typeObj );
         //void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj );
         void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<anab::Calorimetry> const& shw_to_calo, int const& thisId,int const& typeObj );
@@ -124,13 +129,13 @@ class MyFlashMatching : public art::EDAnalyzer
         phot::PhotonVisibilityService const* fPVS;
         phot::SemiAnalyticalModel const* fSAM;
 
-        std::vector<double> fPDEVector;
         double XTalk;
 
         bool norm=false;
         bool getShowers = false;
         bool fitMode = true;
         bool isMC = true;
+        bool useSCE = false;
         std::string ClusterType; //Slice,PFP,Track
         std::string DetectorZone; //Positive,Negative,All
         std::string type_fit;
@@ -159,6 +164,11 @@ class MyFlashMatching : public art::EDAnalyzer
         std::vector<double> charge_pe,charge_peTrivial;
 
         double ftriggerTime = 0.0;
+
+        std::vector<double> xch,ych,zch,dch, dch_trivial;
+        std::vector<double> fPDEVector;
+        std::vector<double> fXTalkVector;
+        std::vector<int> fCHActiveVector;
 };
 
 MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
@@ -191,6 +201,12 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
         std::cout << "Analysing MC!!! " << std::endl;
     else
         std::cout << "Analysing Real Data!!! " << std::endl;
+
+    useSCE = p.get<bool>("useSCE",false);
+    if(useSCE)
+        std::cout << "Using SCE corrections " << std::endl;
+    else
+        std::cout << " NOTTTT Using SCE corrections " << std::endl;    
 
     ClusterType=p.get<std::string>("ClusterType","Track");
     DetectorZone=p.get<std::string>("DetectorZone","All");
@@ -251,11 +267,11 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
     
     fTriggerLabel = p.get<std::string>("TriggerTag","daq:trigger:pdhdkeepupstage1");
 
-    fPDEVector = p.get<std::vector<double>>("PDEvector",std::vector<double>(nOPdet,0.03));
-    XTalk =p.get<double>("XTalk",0.01);
+    //fPDEVector = p.get<std::vector<double>>("PDEvector",std::vector<double>(nOPdet,0.03));
+    //XTalk =p.get<double>("XTalk",0.01);
 
-    std::cout << "PDE loaded " << fPDEVector[0] << std::endl;
-    std::cout << "Xtalk loaded " << XTalk << std::endl;
+    //std::cout << "PDE loaded " << fPDEVector[0] << std::endl;
+    //std::cout << "Xtalk loaded " << XTalk << std::endl;
 
     flash_pe=std::vector<double>(nOPdet);
     flash_peTrivial=std::vector<double>(nOPdet);
@@ -264,6 +280,29 @@ MyFlashMatching::MyFlashMatching(fhicl::ParameterSet const& p)
 
     ftriggerTime = p.get<double>("triggerTime",0.0);
     std::cout << ftriggerTime << " : Trigger Time loaded (only used when MONTE CARLO)" << std::endl;
+
+    xch=std::vector<double>(nOPdet,0.0);
+    ych=std::vector<double>(nOPdet,0.0);
+    zch=std::vector<double>(nOPdet,0.0);
+    dch=std::vector<double>(nOPdet,0.0);
+    for(int channel=0;channel<nOPdet;++channel)
+    {   
+        auto opDet = geo->OpDetGeoFromOpDet(channel);
+        auto const c = opDet.GetCenter(); 
+        xch[channel]=c.X();
+        ych[channel]=c.Y();
+        zch[channel]=c.Z();
+    }  
+
+    fPDEVector = p.get<std::vector<double>>("PDEvector",std::vector<double>(nOPdet,0.03));
+    fXTalkVector = p.get<std::vector<double>>("XTalkvector",std::vector<double>(nOPdet,0.09));
+    fCHActiveVector = p.get<std::vector<int>>("CHActive",std::vector<int>(nOPdet,1));
+
+    std::cout << "PDE loaded " << fPDEVector[0] << std::endl;
+    std::cout << "Xtalk loaded " << fXTalkVector[0] << std::endl;
+    std::cout << "Active Vector loaded " << fCHActiveVector[0] << std::endl;
+
+    gain_factor = p.get<double>("gain_factor",1.0);
 }
 
 void MyFlashMatching::beginJob()
@@ -299,6 +338,8 @@ void MyFlashMatching::beginJob()
     fTreeF->Branch("flashPE",&flash_pe);
     fTreeF->Branch("chargePE",&charge_pe);
     fTreeF->Branch("chargePE_trivial",&charge_peTrivial);
+    fTreeF->Branch("dCH", &dch);
+    fTreeF->Branch("dCH_trivial", &dch_trivial);
 
     fTreeT = tfs->make<TTree>("treeMatchT", "Flash Match 2 with likelihood fit using poisson and Hungarian algorithm to assing  light to charge");
 
@@ -330,6 +371,8 @@ void MyFlashMatching::beginJob()
     fTreeT->Branch("flashPE_trivial",&flash_peTrivial);
     fTreeT->Branch("chargePE",&charge_pe);
     fTreeT->Branch("chargePE_trivial",&charge_peTrivial);
+    fTreeT->Branch("dCH", &dch);
+    fTreeT->Branch("dCH_trivial", &dch_trivial);
 }
 
 void MyFlashMatching::analyze(art::Event const& e)
@@ -358,6 +401,7 @@ void MyFlashMatching::analyze(art::Event const& e)
     run    = e.id().run();
     event  = e.id().event();
 
+    auto const* sce = lar::providerFrom<spacecharge::SpaceChargeService>();
     auto const clock_data = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
     auto const det_prop = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(e, clock_data);
     art::ServiceHandle<sim::LArG4Parameters const> g4param;
@@ -386,7 +430,7 @@ void MyFlashMatching::analyze(art::Event const& e)
     std::cout <<"Final number Flashs: " << QFlashs.size() << std::endl;
 
     myMatch* match_operator = new myMatch(QClusters,QFlashs,drift_length,drift_speed,electronlife,density,Efield,fPVS,fSAM,
-        fPDEVector,XTalk,norm,DetectorZone,type_fit,fitMode);
+        fPDEVector,fXTalkVector,fCHActiveVector,useSCE,sce,norm,DetectorZone,type_fit,fitMode);
     std::cout << "pudim" << std::endl;
 
     auto& HR = match_operator->HR;
@@ -425,6 +469,7 @@ void MyFlashMatching::analyze(art::Event const& e)
         fcloseAnodeTrivial = 1e8;
         fvisEffTrivial = -1e6;
         charge_peTrivial = std::vector<double>(nOPdet,-1.0);
+        dch_trivial = std::vector<double>(nOPdet,-1.0);
         
         if (haveClusters && (int)MYScore[nf].size() >= Nc) 
         {
@@ -444,6 +489,7 @@ void MyFlashMatching::analyze(art::Event const& e)
             match_operator->cluster_actual = qqs[ncTrivial]; //setar cluster
             match_operator->ChargeHypothesis(fdeltat0Trivial);//calcular flash hip
             charge_peTrivial= match_operator->flash_fit.PE_CH;//pegar flash hip
+            dch_trivial = match_operator->returndCh(xch,ych,zch);
 
         }
         // se caiu em dummy
@@ -459,6 +505,7 @@ void MyFlashMatching::analyze(art::Event const& e)
             fcloseAnode = 1e8;
             fvisEff = -1e6;
             charge_pe = std::vector<double>(nOPdet,-1.0);
+            dch = std::vector<double>(nOPdet,-1.0);
         } 
         else
         {
@@ -475,6 +522,7 @@ void MyFlashMatching::analyze(art::Event const& e)
             match_operator->cluster_actual = qqs[nc]; //setar cluster
             match_operator->ChargeHypothesis(fdeltat0);//calcular flash hip
             charge_pe= match_operator->flash_fit.PE_CH;//pegar flash hip
+            dch = match_operator->returndCh(xch,ych,zch);
 
         }
         fTreeF->Fill();
@@ -504,6 +552,7 @@ void MyFlashMatching::analyze(art::Event const& e)
         fNCh_FlashTrivial = -5000;
         charge_peTrivial = std::vector<double>(nOPdet,-1.0);
         flash_peTrivial = std::vector<double>(nOPdet,-1.0);
+        dch_trivial = std::vector<double>(nOPdet,-1.0);
 
         fflashID   = -1;
         fflashTime = -9e6;
@@ -515,6 +564,7 @@ void MyFlashMatching::analyze(art::Event const& e)
         fNCh_Flash = -5000;
         charge_pe = std::vector<double>(nOPdet,-1.0);
         flash_pe = std::vector<double>(nOPdet,-1.0);
+        dch = std::vector<double>(nOPdet,-1.0);
 
         match_operator->cluster_actual = qqs[nc]; //setar cluster
 
@@ -544,6 +594,7 @@ void MyFlashMatching::analyze(art::Event const& e)
                 flash_peTrivial = qfs[nfTrivial].PE_CH;
                 match_operator->ChargeHypothesis(fdeltat0Trivial);//calcular flash hip
                 charge_peTrivial= match_operator->flash_fit.PE_CH;//pegar flash hip
+                dch_trivial = match_operator->returndCh(xch,ych,zch);
 
             }
         }
@@ -567,6 +618,7 @@ void MyFlashMatching::analyze(art::Event const& e)
             flash_pe = qfs[nf].PE_CH;
             match_operator->ChargeHypothesis(fdeltat0);//calcular flash hip
             charge_pe= match_operator->flash_fit.PE_CH;//pegar flash hip
+            dch = match_operator->returndCh(xch,ych,zch);
         }
         fTreeT->Fill();
     }
@@ -645,12 +697,13 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
     auto const& dADCdx_v = calo->dQdx();
     auto const& pitch_v = calo->TrkPitchVec();
     auto const& pos_v   = calo->XYZ();
+    auto const& indexpoints = calo->TpIndices();
 
     // create vector of e- instead of ADC units
     std::vector<float> dQdx_v(dADCdx_v.size(),0);
     for (size_t s = 0; s < dADCdx_v.size(); s++)
     {
-        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
+        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane))*gain_factor;
     }
 
     //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
@@ -660,6 +713,24 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
         float x = pos_v[s].X();
         float y = pos_v[s].Y();
         float z = pos_v[s].Z();
+
+        float dirx = -1;
+        float diry = -1;
+        float dirz = -1;
+        if (s < indexpoints.size())
+        {
+            int indp = indexpoints[s];
+            if(indp>=0)
+            {
+                if(trk->HasValidPoint(indp))
+                {
+                    auto const& dir_v = trk->DirectionAtPoint(indp);
+                    dirx = dir_v.X();
+                    diry = dir_v.Y();
+                    dirz = dir_v.Z();
+                }
+            }
+        }
 
         if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
         {
@@ -689,7 +760,7 @@ void MyFlashMatching::returnQCluster(QCluster& this_qlight, art::Ptr<recob::Trac
         {
             //aqui depois colocamos os valores estranhos
         }
-        this_qlight.push_back(QPoint(x,y,z,dQ,-1,-1,-1,pitch,ob_APA));
+        this_qlight.push_back(QPoint(x,y,z,dQ,dirx,diry,dirz,pitch,ob_APA));
         //this_qlight.push_back(QPoint(x,y,z,nphotons));
     }
     this_qlight.objID = thisId;
@@ -779,7 +850,7 @@ void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob
     std::vector<float> dQdx_v(dADCdx_v.size(),0);
     for (size_t s = 0; s < dADCdx_v.size(); s++)
     {
-        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane));
+        dQdx_v[s] = dADCdx_v[s]*(1/_cal_area_const.at(plane))*gain_factor;
     }
 
     //varre todas as posicoes/energia depositadas
@@ -788,6 +859,12 @@ void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob
         float x = pos_v[s].X();
         float y = pos_v[s].Y();
         float z = pos_v[s].Z();
+
+        const auto& dir = shw->Direction();
+        float dirx = dir.X();
+        float diry = dir.Y();
+        float dirz = dir.Z();
+        
         if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
         {
             continue;
@@ -817,7 +894,7 @@ void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob
         {
             //aqui depois colocamos os valores estranhos
         }
-        this_qlight.push_back(QPoint(x,y,z,dQ,-1,-1,-1,pitch,ob_APA));
+        this_qlight.push_back(QPoint(x,y,z,dQ,dirx,diry,dirz,pitch,ob_APA));
         //this_qlight.push_back(QPoint(x,y,z,nphotons));
         
     }
@@ -831,6 +908,12 @@ void MyFlashMatching::returnQClusterShower(QCluster& this_qlight, art::Ptr<recob
 std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
 {
     auto slice_h = e.getValidHandle<std::vector<recob::Slice>>(fSliceLabel);
+    if (!slice_h) {
+        mf::LogWarning("MyFlashMatchingGetClusters")
+            << "Slice product not found: " << fSliceLabel
+            << " ; skipping event " << e.id();
+        return {};
+    }
     auto pfp_h   = e.getValidHandle<std::vector<recob::PFParticle>>(fPFPLabel);
     auto track_h = e.getValidHandle<std::vector<recob::Track>>(fTrackLabel);
     auto calo_h  = e.getValidHandle<std::vector<anab::Calorimetry>>(fCaloLabel);
@@ -965,6 +1048,7 @@ std::vector<QCluster> MyFlashMatching::getQClustersSlices(art::Event const& e)
 
             if (totalLength >= trackLength)
             {
+                this_qlight.Charge = this_qlight.TotalCharge();
                 QLights.push_back(this_qlight);
             }
         }
@@ -1078,6 +1162,7 @@ std::vector<QCluster> MyFlashMatching::getQClustersTracks(art::Event const& e)
         {
             returnQCluster(this_qlight,trk,trk_to_calo,trk->ID(),0);
             this_qlight.Length = trk->Length();
+            this_qlight.Charge = this_qlight.TotalCharge();
         }
         
         if(this_qlight.size()>0)
@@ -1209,7 +1294,7 @@ std::vector<QFlash> MyFlashMatching::getFlashs(art::Event const& e)
         for(int j=0;j<number_hits;j++)
         {
             int this_ch=hits[j]->OpChannel();
-            this_qflash.PE_CH[this_ch]+=hits[j]->PE();
+            this_qflash.PE_CH[this_ch]+=hits[j]->PE()*fCHActiveVector[this_ch];
         }
 
         auto flash1 = 0.0;

@@ -161,24 +161,29 @@ double myMatch::NLL()
     {
         for(int ch=chi;ch<=chf;++ch)
         {   
-            double O = flash_actual.PE_CH[ch]; //OBSERVADO
-            double H = flash_fit.PE_CH[ch]; //HIPOTESE
-            if (H < eps) H = eps;
+            if(CHActiveVector[ch]==1)
+            {
 
-            // Poisson NLL (com gamma pra O double) --> se normalizado vira (cross entropy) (sum(H)=1)
-            double p_active = PE_prob_activate(H,ch);
-            if(O==0.0) // (1-activate) +active*nll(zero)
-            {
-                double p0 = (1.0 - p_active) + p_active * std::exp(-H);
-                if (p0 < eps) p0 = eps;
-                nll -= std::log(p0);
-            }
-            else// pactive * poisson --> e^-H * H^O / O!
-            {
-                if (p_active < eps) p_active = eps;
-                nll += (H - O * std::log(H)) + std::lgamma(O + 1.0) - std::log(p_active);
-            }
+                double O = flash_actual.PE_CH[ch]; //OBSERVADO
+                double H = flash_fit.PE_CH[ch]; //HIPOTESE
+                if (H < eps) H = eps;
+
+                // Poisson NLL (com gamma pra O double) --> se normalizado vira (cross entropy) (sum(H)=1)
+                double p_active = PE_prob_activate(H,ch);
+                if(O==0.0) // (1-activate) +active*nll(zero)
+                {
+                    double p0 = (1.0 - p_active) + p_active * std::exp(-H);
+                    if (p0 < eps) p0 = eps;
+                    nll -= std::log(p0);
+                }
+                else// pactive * poisson --> e^-H * H^O / O!
+                {
+                    if (p_active < eps) p_active = eps;
+                    nll += (H - O * std::log(H)) + std::lgamma(O + 1.0) - std::log(p_active);
+                }
              // (termo gamma constante para os flashs)
+            }
+
         }
     }
     else if(type_fit=="deviance")
@@ -233,8 +238,20 @@ void myMatch::fixPositionSce()
    
         double pitch = dir_corr.Mag();
         cluster_fit[i].pitch = pitch;
-        cluster_fit[i].q=cluster_fit[i].q*pitch_o/pitch;
+        if(pitch!=0) cluster_fit[i].q=cluster_fit[i].q*pitch_o/pitch;
     }
+}
+
+double myMatch::getLocalEfield(double x, double y, double z, int tpcid) const
+{
+    double E_corr = Efield; // nominal
+    if (useSCE && fSCE && fSCE->EnableCalEfieldSCE()) 
+    {
+        auto eOff = fSCE->GetCalEfieldOffsets(geo::Point_t{x, y, z}, tpcid);
+        E_corr = Efield * std::hypot(1.0 + eOff.X(), eOff.Y(), eOff.Z());
+    }
+
+    return E_corr;
 }
 
 
@@ -242,20 +259,25 @@ void myMatch::ChargeHypothesis(const double xoffset)
 {
     //faz o deslocamento
     cluster_fit.resize(cluster_actual.size());
+    ratio_sce.resize(cluster_actual.size(),1.0);
+
     cluster_fit = cluster_actual;
     double drift_time = 0.0;
     double atten_corr = 0.0;
     double dQdxCorr=0.0;
     double dQ=0.0;
     double dE=0.0;
+    double dE_nosce;
     double dEdx = 0.0;
+    double dEdx_nosce = 0.0;
     double nphotons = 0.0;
 
     double W_ion = 23.6e-6;
     double W_Lar = 19.6e-6;
     double C1=0.212; // g/(MeV cm²)*kV/cm. 
-    double B=C1/(density*Efield);
     double A=0.930; //
+
+    //std::cout << drift_speed << " " << Efield << "\n";
     for (size_t pt_index = 0; pt_index < cluster_actual.size(); ++pt_index) 
     {
         if(cluster_actual[pt_index].APA==2 ||cluster_actual[pt_index].APA==6 ) cluster_fit[pt_index].x = cluster_actual[pt_index].x + xoffset;
@@ -266,21 +288,54 @@ void myMatch::ChargeHypothesis(const double xoffset)
     }
 
     if(useSCE) fixPositionSce();
+    save_charge = cluster_fit.TotalCharge();
 
     for (size_t pt_index = 0; pt_index < cluster_actual.size(); ++pt_index) 
     {
+        double B = C1 / (density * Efield);
+        double Bnosce = B;
+        if(useSCE)
+        {
+            double x = cluster_fit[pt_index].x;
+            double y = cluster_fit[pt_index].y;
+            double z = cluster_fit[pt_index].z;
+            int tpcid = cluster_fit[pt_index].APA;
+            double E_local = getLocalEfield(x, y, z, tpcid);
+            if (E_local > 0.0) 
+            {
+                B = C1 / (density * E_local);
+            }
+            //std::cout << "Using sce   " << E_local << " -- "  << Efield << std::endl; 
+        }
+     /*    else
+        {
+            //std::cout << "Not sce   " << Efield << "  " << drift_speed << std::endl; 
+        } */
+        
         //ESTIMAR A ENERGIA
         drift_time = (drift_length - std::abs(cluster_fit[pt_index].x)) / drift_speed;
         if (drift_time < 0.0) drift_time = 0.0; // fora de geometria / proteção
         atten_corr = std::exp(drift_time/elec_atenuation);
-        dQdxCorr=cluster_actual[pt_index].q*atten_corr;
+        dQdxCorr = cluster_fit[pt_index].q*atten_corr;
         
         dEdx = (std::exp(B * W_ion * dQdxCorr) - A) / B;
+        dEdx_nosce = (std::exp(Bnosce * W_ion * dQdxCorr) - A) / Bnosce;
 
-        dQ = dQdxCorr * cluster_actual[pt_index].pitch;
-        dE = dEdx * cluster_actual[pt_index].pitch;
+        cluster_fit[pt_index].e = dEdx;
+
+        dQ = dQdxCorr * cluster_fit[pt_index].pitch;
+        dE = dEdx * cluster_fit[pt_index].pitch;
+        dE_nosce = dEdx_nosce * cluster_fit[pt_index].pitch;
+
         nphotons = dE/W_Lar-dQ;
         cluster_fit[pt_index].q = std::max(0.0f, static_cast<float>(nphotons));
+
+        nphotons = dE_nosce/W_Lar-dQ;
+        nphotons = std::max(0.0f, static_cast<float>(nphotons));
+        if (nphotons > 0.0)
+            ratio_sce[pt_index] = cluster_fit[pt_index].q / nphotons;
+        else
+            ratio_sce[pt_index] = 1.0;
     }
 
 
@@ -300,7 +355,7 @@ void myMatch::ChargeHypothesis(const double xoffset)
         double q = 0.0;
 
         x = this->cluster_fit[i].x ;
-        if(abs(x)>=drift_length+10) continue;
+        if(abs(x)>=(drift_length+10)) continue;
         y = this->cluster_fit[i].y ;
         z = this->cluster_fit[i].z ;
         q = this->cluster_fit[i].q ;
@@ -535,16 +590,16 @@ bool myMatch::startFlash(const QCluster* qs,const  QFlash* qf)
     this->MYScore[nf][nc] = NLL();
     this->MYOffset[nf][nc] = bestx;
     this->MYdeltaT0[nf][nc] = shiftt0;  
-    this->MYcloseAnode[nf][nc] = abs(x_close_anode);  
-    this->MYvisEf[nf][nc] = returnVisEff(qs,shiftt0);
+    this->MYcloseAnode[nf][nc] = x_close_anode;  
+    this->MYvisEf[nf][nc] = returnVisEff();
 
     return true;
 }
 
 myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
-    double drift_speed, double elec_atenuation, double density, double Efield,
-    phot::PhotonVisibilityService const* PVS, phot::SemiAnalyticalModel const* SAM, 
-    const std::vector<double>& eff, double XTalk, bool norm, std::string DetectorZone, std::string typeFit, bool fit_mode)
+            double drift_speed, double elec_atenuation, double density, double Efield, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
+            const std::vector<double>& eff, std::vector<double>& XTalk, std::vector<int>& CHActive, bool fuseSCE, spacecharge::SpaceCharge const* sce_service, bool norm, 
+            std::string DetectorZone, std::string typeFit, bool fit_mode)
 {
     this->drift_length = drift_length;
     this->drift_speed = drift_speed;
@@ -572,21 +627,28 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
     this->Ncol = this->Nc;
    
     this->effVector = eff;
-    this->Xtalk = XTalk;
-    this->Kdup = this->Xtalk/(1-this->Xtalk);
+    this->XtalkVector = XTalk;
+    this->CHActiveVector = CHActive;
+   
+    this->CH_MAX = fPVS->NOpChannels();
+    for(int i=0; i< this->CH_MAX;i++)
+    {
+        this->XtalkVector[i] = this->XtalkVector[i]/(1-this->XtalkVector[i]);
+    }
+    direct_visibilities.assign(CH_MAX, 0.0);
+
+    flash_fit.PE_CH.clear();
+    flash_fit.PE_CH.assign(CH_MAX, 0.0);
+
+    this->useSCE = fuseSCE;
+    this->fSCE = sce_service;
 
     const double BIG = 1e12; 
     MYScore.assign(Nline, std::vector<double>(Ncol, BIG));
-    MYOffset.assign(Nline, std::vector<double>(Ncol, -100000.0));
-    MYdeltaT0.assign(Nline, std::vector<double>(Ncol, -100000.0));
-    MYcloseAnode.assign(Nline, std::vector<double>(Ncol, -100000.0));
-    MYvisEf.assign(Nline, std::vector<double>(Ncol, -100000.0));
-
-    this->CH_MAX = fPVS->NOpChannels();
-    direct_visibilities.assign(CH_MAX, 0.0);
-
-    this->XtalkVector = std::vector<double>(CH_MAX,this->Kdup);
-    this->CHActiveVector = std::vector<int>(CH_MAX,1);
+    //MYOffset.assign(Nline, std::vector<double>(Ncol, -100000.0));
+    //MYdeltaT0.assign(Nline, std::vector<double>(Ncol, -100000.0));
+    //MYcloseAnode.assign(Nline, std::vector<double>(Ncol, -100000.0));
+    //MYvisEf.assign(Nline, std::vector<double>(Ncol, -100000.0));
 
     //talvez colocar um algoritmo de filtro para filtrar cluster e flashs? --> tipo isso usado no codigo no SBND _alg_tpc_filter->Filter(_tpc_object_v);
     for(nf=0;nf<Nf;nf++)
@@ -595,7 +657,7 @@ myMatch::myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drif
         {
             //std::cout << "flash: " << nf << "cluster: " << nc << " --> " ;
             //AQUI testamos se essa dupla eh possivel
-            if(this->checkPossibility(&qqs[nc],&qfs[nf]))
+            if(this->checkPossibility(&qqs[nc],&qfs[nf],50))
             {
                 //testa o par
                 /* std::cout << nf << " -- " << nc << std::endl;  */
@@ -687,7 +749,7 @@ double myMatch::returnVisEff(const QCluster* qs, const QFlash* qf, const double 
         const auto& pt = (*qs)[pt_index];
 
         double x = pt.x;
-        if(abs(x)>=drift_length+10) continue;
+        
         double y = pt.y;
         double z = pt.z;
         double pitch = (pt.pitch >= 0.0) ? pt.pitch : 0.0;
@@ -699,6 +761,8 @@ double myMatch::returnVisEff(const QCluster* qs, const QFlash* qf, const double 
         else
             continue;
 
+        if(abs(x)>=(drift_length+10)) continue;
+
         geo::Point_t point{x, y, z};
         fSAM->detectedDirectVisibilities(direct_visibilities, point);
 
@@ -708,7 +772,6 @@ double myMatch::returnVisEff(const QCluster* qs, const QFlash* qf, const double 
             {
                 total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
             }
-          
         }
     }
 
@@ -726,7 +789,7 @@ double myMatch::returnVisEff()
         const auto& pt = (cluster_fit)[pt_index];
 
         double x = pt.x;
-        if(abs(x)>=drift_length+10) continue;
+        if(abs(x)>=(drift_length+10)) continue;
         double y = pt.y;
         double z = pt.z;
         double pitch = (pt.pitch >= 0.0) ? pt.pitch : 0.0;
@@ -738,9 +801,14 @@ double myMatch::returnVisEff()
         {
             if(flash_actual.PE_CH[ch]>0)
             {
-                total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                if(!useSCE)
+                    total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                else
+                {
+                    double ratio = ratio_sce[pt_index];
+                    total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch]* ratio;
+                }
             }
-          
         }
     }
 
@@ -761,7 +829,6 @@ std::vector<double> myMatch::returnVisEffCh(const QCluster* qs, const QFlash* qf
         const auto& pt = (*qs)[pt_index];
 
         double x = pt.x;
-        if(abs(x)>=drift_length+10) continue;
         double y = pt.y;
         double z = pt.z;
         double pitch = (pt.pitch >= 0.0) ? pt.pitch : 0.0;
@@ -772,6 +839,8 @@ std::vector<double> myMatch::returnVisEffCh(const QCluster* qs, const QFlash* qf
             x = pt.x - xoffset;
         else
             continue;
+
+        if(abs(x)>=(drift_length+10)) continue;
 
         geo::Point_t point{x, y, z};
         fSAM->detectedDirectVisibilities(direct_visibilities, point);
@@ -813,7 +882,7 @@ std::vector<double> myMatch::returnVisEffCh()
         const auto& pt = (cluster_fit)[pt_index];
 
         double x = pt.x;
-        if(abs(x)>=drift_length+10) continue;
+        if(abs(x)>=(drift_length+10)) continue;
         double y = pt.y;
         double z = pt.z;
         double pitch = (pt.pitch >= 0.0) ? pt.pitch : 0.0;
@@ -869,7 +938,7 @@ std::vector<double> myMatch::returndCh(const QCluster* qs,const double xoffset,c
         else
             continue;
 
-        if (std::abs(x) >= drift_length + 10.0) continue;
+        if (std::abs(x) >= (drift_length + 10.0)) continue;
 
         for (int ch = 0; ch < CH_MAX; ++ch)
         {
@@ -905,7 +974,7 @@ std::vector<double> myMatch::returndCh(const std::vector<double>& xch,const std:
         double y = pt.y;
         double z = pt.z;
 
-        if (std::abs(x) >= drift_length + 10.0) continue;
+        if (std::abs(x) >= (drift_length + 10.0)) continue;
 
         for (int ch = 0; ch < CH_MAX; ++ch)
         {

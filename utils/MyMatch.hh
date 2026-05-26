@@ -21,7 +21,8 @@ class myMatch
         myMatch();
         myMatch(std::vector<QCluster> qqs ,std::vector<QFlash> qfs, double drift_length, 
             double drift_speed, double elec_atenuation, double density, double Efield, phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
-            const std::vector<double>& eff, double XTalk = 0.0, bool norm=false, std::string DetectorZone = "All", std::string typeFit = "flash", bool fit_mode=true);
+            const std::vector<double>& eff, std::vector<double>& XTalk, std::vector<int>& CHActive, bool fuseSCE, spacecharge::SpaceCharge const* sce_service, 
+            bool norm=false, std::string DetectorZone = "All", std::string typeFit = "flash", bool fit_mode=true);
         myMatch(double drift_length, double drift_speed, double elec_atenuation, double density, double Efield, 
             phot::PhotonVisibilityService const* PVS,  phot::SemiAnalyticalModel const* SAM,
             const std::vector<double>& eff, std::vector<double>& XTalk, std::vector<int>& CHActive, 
@@ -48,12 +49,15 @@ class myMatch
         std::vector<double> returndCh(const std::vector<double>& xch,const std::vector<double>& ych,const std::vector<double>& zch);
 
         void fixPositionSce();
+        double getLocalEfield(double x, double y, double z, int tpcid) const;
 
         double drift_length;
         double drift_speed;
         double elec_atenuation;
         double density;
         double Efield;
+
+        double save_charge=0.0;
 
         int CH_MAX=80;
         int APA=0;
@@ -98,6 +102,8 @@ class myMatch
         std::vector<double> effVector;
         std::vector<double> XtalkVector;
         std::vector<int> CHActiveVector;
+
+        std::vector<double> ratio_sce;
 
         double Xtalk;
         double Kdup;

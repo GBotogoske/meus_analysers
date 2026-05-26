@@ -17,7 +17,7 @@ class QPoint
         QPoint()
         {
         }
-        QPoint(double x0,double y0,double z0, double q0, double dirx0,double diry0,double dirz0, double pitch0 = 0.0, double APA0=-1)
+        QPoint(double x0,double y0,double z0, double q0, double dirx0,double diry0,double dirz0, double pitch0 = 0.0, double APA0=-1,double e0=-1)
         {
             x=x0;
             y=y0;
@@ -28,9 +28,10 @@ class QPoint
             dirx=dirx0;
             diry=diry0;
             dirz=dirz0;
+            e=e0;
         }
         virtual ~QPoint() = default;
-        double x,y,z,q,pitch,APA,dirx,diry,dirz;
+        double x,y,z,q,pitch,APA,dirx,diry,dirz,e;
         ClassDef(QPoint, 1);
 };
 
@@ -43,12 +44,13 @@ class QCluster : public std::vector<QPoint>
 
         double Length = 0.0;
         double Charge=0.0;
+        double Energy=0.0;
 
         QCluster() = default;
         virtual ~QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length), Charge(other.Charge)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length), Charge(other.Charge), Energy(other.Energy)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -61,6 +63,7 @@ class QCluster : public std::vector<QPoint>
                 APA = other.APA;
                 Length = other.Length;
                 Charge = other.Charge;
+                Energy = other.Energy;
             }
             return *this;
         }
@@ -75,6 +78,27 @@ class QCluster : public std::vector<QPoint>
                 qT += qi;
             }
             return qT;
+        }
+        double calcLength() const
+        {
+            double L=0.0;
+            for (const auto& p : *this) 
+            {
+                double li = p.pitch;
+                L += li;
+            }
+            return L;
+        }
+        double TotalEnergy() const
+        {
+            double eT = 0.0;
+            for (const auto& p : *this) 
+            {
+                double ei = p.e;
+                if (p.pitch > 0.0) ei *= p.pitch;
+                eT += ei;
+            }
+            return eT;
         }
         ClassDef(QCluster, 1);
 };

@@ -1,0 +1,239 @@
+#include "art/Framework/Core/EDAnalyzer.h"
+#include "art/Framework/Core/ModuleMacros.h"
+#include "art/Framework/Principal/Event.h"
+#include "art/Framework/Principal/Handle.h"
+#include "canvas/Utilities/InputTag.h"
+#include "lardataobj/RawData/OpDetWaveform.h"
+
+#include "art_root_io/TFileService.h"
+#include "art/Framework/Services/Registry/ServiceHandle.h"
+
+#include "TTree.h"
+
+#include <iostream> // Para debug opcional
+
+#include "dunecore/DuneObj/OpDetDivRec.h" //novo
+#include "larsim/MCCheater/ParticleInventoryService.h" //novo
+
+
+class MyWaveformAnalyzerDetSim : public art::EDAnalyzer 
+{
+  public:
+    explicit MyWaveformAnalyzerDetSim(fhicl::ParameterSet const& p);
+
+    void analyze(art::Event const& e) override;
+    void beginJob() override;
+
+  private:
+    art::InputTag fInputTag;
+
+    TTree* fTree = nullptr;
+  
+    int fRun, fEvent;
+    int fOfflineChannel;
+    long fTimestamp;
+    std::vector<raw::ADC_Count_t> fADCValue;
+
+    bool fchannel_exist = true;
+    /* std::vector<int> fTrackIDs;
+    std::vector<int> fPDGIDs;
+    std::vector<int> fMother;
+
+    std::vector<double> fPosIniX, fPosIniY, fPosIniZ;
+    std::vector<double> fPosEndX, fPosEndY, fPosEndZ;
+    std::vector<double> fMomIniX, fMomIniY, fMomIniZ;
+    std::vector<double> fMomEndX, fMomEndY, fMomEndZ;
+    std::vector<double> fEneIni, fEneEnd;
+ */
+};
+
+MyWaveformAnalyzerDetSim::MyWaveformAnalyzerDetSim(fhicl::ParameterSet const& p)
+  : EDAnalyzer(p),
+    fInputTag(p.get<std::string>("input_tag")),
+    fchannel_exist{p.get<bool>("channel_exist", true)}
+{
+}
+
+void MyWaveformAnalyzerDetSim::beginJob() 
+{
+        
+        art::ServiceHandle<art::TFileService> tfs;
+        fTree = tfs->make<TTree>("waveform_tree", "Waveforms");
+        fTree->Branch("run" , &fRun);
+        fTree->Branch("event" , &fEvent);
+        fTree->Branch("offline_channel" , &fOfflineChannel);
+        fTree->Branch("timestamp" , &fTimestamp);
+        fTree->Branch("adc" , &fADCValue);
+        //fTree->Branch("track", &fTrackIDs);
+        /* fTree->Branch("pdg", &fPDGIDs);
+        fTree->Branch("mother", &fMother);
+
+        // Posição inicial
+        fTree->Branch("vx", &fPosIniX);
+        fTree->Branch("vy", &fPosIniY);
+        fTree->Branch("vz", &fPosIniZ);
+
+        // Posição final
+        fTree->Branch("ex", &fPosEndX);
+        fTree->Branch("ey", &fPosEndY);
+        fTree->Branch("ez", &fPosEndZ);
+
+        // Momento inicial
+        fTree->Branch("px", &fMomIniX);
+        fTree->Branch("py", &fMomIniY);
+        fTree->Branch("pz", &fMomIniZ);
+
+        // Momento final
+        fTree->Branch("epx", &fMomEndX);
+        fTree->Branch("epy", &fMomEndY);
+        fTree->Branch("epz", &fMomEndZ);
+
+        // Energia
+        fTree->Branch("e", &fEneIni);
+        fTree->Branch("ee", &fEneEnd);
+ */
+
+}
+
+void MyWaveformAnalyzerDetSim::analyze(art::Event const& e)
+{
+        //std::cout << "oi" << std::endl;
+        fRun = e.run();
+        fEvent = e.event();
+
+        auto wfHandle = e.getHandle<std::vector<raw::OpDetWaveform>>(fInputTag);
+
+        //auto divrecHandle = e.getHandle<std::vector<sim::OpDetDivRec>>(art::InputTag("opdigi")); // Ajuste a tag
+
+       /*  std::unordered_map<int, const sim::OpDetDivRec*> divrec_map;
+        for (const auto& divrec : *divrecHandle) 
+        {
+                divrec_map[divrec.OpDetNum()] = &divrec;
+        } */
+
+        if (!wfHandle || wfHandle->empty())
+        {
+                std::cout << "No PDS data in event: run " << fRun << ", event " << fEvent << std::endl;
+                return;
+        }
+
+        // Agora converte para vetor e busca PDGIDs
+        art::ServiceHandle<cheat::ParticleInventoryService const> pis;                        
+
+        for (const auto& wf : *wfHandle) 
+        {
+               
+                
+                fOfflineChannel = wf.ChannelNumber();
+                fTimestamp = wf.TimeStamp();
+                fADCValue.assign(wf.begin(), wf.end());
+
+                //fTrackIDs.clear();
+                //fPDGIDs.clear();
+
+                /*  if(fOfflineChannel >= 80)
+                        {
+                        continue;  
+                        }
+                        */
+               /*  std::set<int> uniqueTrackIDs; // para evitar duplicados temporários
+
+                auto it = divrec_map.find(fOfflineChannel);
+                if (it != divrec_map.end())
+                {
+                        const auto& divrec = *(it->second);
+                        uniqueTrackIDs.clear();
+                        
+                        auto timeChans = divrec.GetTimeChans();
+                                
+                        for (const auto& timeChan : timeChans) 
+                        {
+                                
+                                int time = timeChan.time/1000;
+                                const auto& phots = timeChan.phots;
+
+                                //std::cout << fTimestamp << " -- " << time << std::endl;
+
+                                // Verifica se o tempo está dentro da janela do waveform atual (1024 ticks)
+                                if (time >= fTimestamp && time < fTimestamp + 16) 
+                                {
+                                        for (const auto& phot : phots) 
+                                        {
+                                                uniqueTrackIDs.insert(phot.trackID);
+                                        }
+                                }
+                                if (time >= fTimestamp + 16)
+                                {
+                                        break;
+                                }
+                                
+                        }
+
+                        const auto& particleList = pis->ParticleList();
+
+                        for (const int trackID : uniqueTrackIDs) 
+                        {
+                                fTrackIDs.push_back(trackID);
+
+                                const simb::MCParticle* particle = particleList.Particle(trackID);
+                                if (particle) 
+                                {
+                                        fPDGIDs.push_back(particle->PdgCode());
+                                        fMother.push_back(particle->Mother());
+
+                                        fPosIniX.push_back(particle->Vx());
+                                        fPosIniY.push_back(particle->Vy());
+                                        fPosIniZ.push_back(particle->Vz());
+
+                                        fPosEndX.push_back(particle->EndX());
+                                        fPosEndY.push_back(particle->EndY());
+                                        fPosEndZ.push_back(particle->EndZ());
+
+                                        fMomIniX.push_back(particle->Px());
+                                        fMomIniY.push_back(particle->Py());
+                                        fMomIniZ.push_back(particle->Pz());
+
+                                        fMomEndX.push_back(particle->EndPx());
+                                        fMomEndY.push_back(particle->EndPy());
+                                        fMomEndZ.push_back(particle->EndPz());
+
+                                        fEneIni.push_back(particle->E());
+                                        fEneEnd.push_back(particle->EndE());
+                                } 
+                                else 
+                                {
+                                        fPDGIDs.push_back(-5e3);
+                                        fMother.push_back(-5e3);
+                                        fPosIniX.push_back(-9999.);
+                                        fPosIniY.push_back(-9999.);
+                                        fPosIniZ.push_back(-9999.);
+
+                                        fPosEndX.push_back(-9999.);
+                                        fPosEndY.push_back(-9999.);
+                                        fPosEndZ.push_back(-9999.);
+
+                                        fMomIniX.push_back(-9999.);
+                                        fMomIniY.push_back(-9999.);
+                                        fMomIniZ.push_back(-9999.);
+
+                                        fMomEndX.push_back(-9999.);
+                                        fMomEndY.push_back(-9999.);
+                                        fMomEndZ.push_back(-9999.);
+
+                                        fEneIni.push_back(-9999.);
+                                        fEneEnd.push_back(-9999.);
+                                }
+                        }
+                        
+                } */
+                  
+                if(this->fchannel_exist || (!(this->fchannel_exist) && fOfflineChannel !=-1))
+                {
+                    fTree->Fill();
+                }
+              
+        }
+        std::cout << "Processed event: run " << fRun << ", event " << fEvent << std::endl;
+}
+
+DEFINE_ART_MODULE(MyWaveformAnalyzerDetSim)
