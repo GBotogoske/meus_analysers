@@ -177,33 +177,46 @@ void GetMyWireData::analyze(art::Event const& e)
   auto const& wireReadout = art::ServiceHandle<geo::WireReadout const>()->Get();
   auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(e);
 
-  // ------------------------------
+    // ------------------------------
   // 1) RAW DIGITS -> wire_tree
   // ------------------------------
   auto wireHandle = e.getHandle<std::vector<raw::RawDigit>>(fRawDigitLabel);
+
   if (!wireHandle || wireHandle->empty()) {
-    std::cout << "[GetMyWireData] No RawDigit in run " << fRun << " event " << fEvent << "\n";
-    return;
+    std::cout << "[GetMyWireData] AVISO: No RawDigit / sinal puro in run "
+              << fRun << " event " << fEvent
+              << ". Vou continuar usando apenas os hits.\n";
+
+    mf::LogWarning("GetMyWireData")
+      << "No RawDigit / sinal puro in run " << fRun
+      << " event " << fEvent
+      << ". Continuing with hits only.";
   }
-
-  for (const auto& wire : *wireHandle)
-  {
-    fCh = wire.Channel();
-    auto wids = wireReadout.ChannelToWire(fCh);
-
-    fTPC.clear(); fPlane.clear(); fWire.clear();
-    fadc = wire.ADCs();
-
-    fTime = clockData.TPCTick2TrigTime(0);
-
-    for (auto const& wid : wids)
+  else {
+    for (const auto& wire : *wireHandle)
     {
-      fTPC.push_back(wid.TPC);
-      fPlane.push_back(wid.Plane);
-      fWire.push_back(wid.Wire);
+      fCh = wire.Channel();
+      auto wids = wireReadout.ChannelToWire(fCh);
+
+      fTPC.clear();
+      fPlane.clear();
+      fWire.clear();
+
+      fadc = wire.ADCs();
+
+      fTime = clockData.TPCTick2TrigTime(0);
+
+      for (auto const& wid : wids)
+      {
+        fTPC.push_back(wid.TPC);
+        fPlane.push_back(wid.Plane);
+        fWire.push_back(wid.Wire);
+      }
+
+      fTree->Fill();
     }
-    fTree->Fill();
   }
+
 
   // ----------------------------------------
   // 2) OBJETO -> Hits  (track_tree)

@@ -551,9 +551,9 @@ void MyFlashMatchingGetClustersEfield::returnQCluster(QCluster& this_qlight, art
         // ----------------------------
         // Direção
         // ----------------------------
-        float dirx = 0.0;
-        float diry = 0.0;
-        float dirz = 0.0;
+        float dirx = -10.0;
+        float diry = -10.0;
+        float dirz = -10.0;
 
         double stretch = 1.0;
         bool validDir = false;
@@ -756,9 +756,9 @@ void MyFlashMatchingGetClustersEfield::returnQClusterShower(QCluster& this_qligh
         double uy = dir.Y();
         double uz = dir.Z();
 
-        float dirx = -1.0;
-        float diry = -1.0;
-        float dirz = -1.0;
+        float dirx = -10.0;
+        float diry = -10.0;
+        float dirz = -10.0;
 
         double stretch = 1.0;
         bool validDir = false;

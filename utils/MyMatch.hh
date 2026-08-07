@@ -45,6 +45,7 @@ class myMatch
         std::vector<double> returnVisEffCh(const QCluster* qs, const QFlash* qf, const double xoffset);
         std::vector<double> returndCh(const QCluster* qs,const double xoffset,const std::vector<double>& xch,const std::vector<double>& ych,const std::vector<double>& zch);
         double returnVisEff();
+        double returnVisEffLight();
         std::vector<double> returnVisEffCh();
         std::vector<double> returndCh(const std::vector<double>& xch,const std::vector<double>& ych,const std::vector<double>& zch);
 
@@ -108,6 +109,7 @@ class myMatch
         double Xtalk;
         double Kdup;
         bool useSCE = false;
+        double vis_map_factor = 1.0;
 
 };
 

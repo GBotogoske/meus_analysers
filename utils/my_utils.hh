@@ -29,9 +29,10 @@ class QPoint
             diry=diry0;
             dirz=dirz0;
             e=e0;
+            Efield=0.0;
         }
         virtual ~QPoint() = default;
-        double x,y,z,q,pitch,APA,dirx,diry,dirz,e;
+        double x,y,z,q,pitch,APA,dirx,diry,dirz,e,Efield;
         ClassDef(QPoint, 1);
 };
 
@@ -41,16 +42,17 @@ class QCluster : public std::vector<QPoint>
         int objID = -1;
         int type = 0; // 0 --> track, 1-->shower, 2-->PFP, 3-->Slice
         int APA = 0;
-
         double Length = 0.0;
         double Charge=0.0;
         double Energy=0.0;
+        int Nt=0;
+        int Ns=0;
 
         QCluster() = default;
         virtual ~QCluster() = default;
 
         QCluster(const QCluster& other)
-            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length), Charge(other.Charge), Energy(other.Energy)
+            : std::vector<QPoint>(other), objID(other.objID), type(other.type),APA(other.APA), Length(other.Length), Charge(other.Charge), Energy(other.Energy), Nt(other.Nt), Ns(other.Ns)
         {}
 
         QCluster& operator=(const QCluster& other)
@@ -64,6 +66,8 @@ class QCluster : public std::vector<QPoint>
                 Length = other.Length;
                 Charge = other.Charge;
                 Energy = other.Energy;
+                Nt = other.Nt;
+                Ns = other.Ns;
             }
             return *this;
         }

@@ -178,6 +178,52 @@ cet_build_plugin(MyFlashMatchingGetClustersEfield art::module
     utils
 )
 
+cet_build_plugin(MyFlashMatchingGetClustersBasic art::module
+  LIBRARIES
+    larcorealg::Geometry
+    larcore::Geometry_Geometry_service
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    larsim::PhotonPropagation
+    larsim::PhotonPropagation_PhotonVisibilityService_service 
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    art::Framework_Core
+    art::Framework_Principal
+    larevt::SpaceCharge
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+    duneopdet::OpticalDetector
+    utils
+)
+
+cet_build_plugin(MyFlashMatchingGetClustersPredicted art::module
+  LIBRARIES
+    larcorealg::Geometry
+    larcore::Geometry_Geometry_service
+    lardataobj::RawData
+    dunecore::DuneObj                       
+    larsim::MCCheater_ParticleInventoryService_service  
+    larsim::MCCheater_PhotonBackTrackerService_service
+    larsim::PhotonPropagation
+    larsim::PhotonPropagation_PhotonVisibilityService_service 
+    lardata::DetectorInfoServices_DetectorClocksServiceStandard_service
+    art::Framework_Core
+    art::Framework_Principal
+    larevt::SpaceCharge
+    canvas::canvas
+    duneopdet::OpticalDetector
+    art_root_io::TFileService_service
+    ROOT::Core
+    ROOT::Tree
+    duneopdet::OpticalDetector
+    utils
+)
+
 cet_build_plugin(GetHitFlashJoinAnalyzer art::module
   LIBRARIES
     lardataobj::RecoBase

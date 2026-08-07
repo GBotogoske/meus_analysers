@@ -228,6 +228,14 @@ void myMatch::fixPositionSce()
         double diryo = cluster_fit[i].diry;
         double dirzo = cluster_fit[i].dirz;
 
+        if (pitch_o <= 0.0 || dirxo == -10 || diryo == -10 || dirzo == -10)
+        {
+            //cluster_fit[i].pitch = 0.0;
+            //cluster_fit[i].q = 0.0;
+            cluster_fit[i].e = 0.0;
+            continue;
+        }
+
         auto locOffsets = fSCE->GetCalPosOffsets(geo::Point_t{xo,yo,zo}, cluster_fit[i].APA);
         cluster_fit[i].x = xo - locOffsets.X();
         cluster_fit[i].y = yo + locOffsets.Y();
@@ -238,7 +246,13 @@ void myMatch::fixPositionSce()
    
         double pitch = dir_corr.Mag();
         cluster_fit[i].pitch = pitch;
-        if(pitch!=0) cluster_fit[i].q=cluster_fit[i].q*pitch_o/pitch;
+        if(pitch!=0)
+        {
+            cluster_fit[i].dirx = dir_corr.X() / pitch;
+            cluster_fit[i].diry = dir_corr.Y() / pitch;
+            cluster_fit[i].dirz = dir_corr.Z() / pitch;
+            cluster_fit[i].q=cluster_fit[i].q*pitch_o/pitch;
+        } 
     }
 }
 
@@ -294,6 +308,7 @@ void myMatch::ChargeHypothesis(const double xoffset)
     {
         double B = C1 / (density * Efield);
         double Bnosce = B;
+        cluster_fit[pt_index].Efield=Efield;
         if(useSCE)
         {
             double x = cluster_fit[pt_index].x;
@@ -305,6 +320,7 @@ void myMatch::ChargeHypothesis(const double xoffset)
             {
                 B = C1 / (density * E_local);
             }
+            cluster_fit[pt_index].Efield=E_local;
             //std::cout << "Using sce   " << E_local << " -- "  << Efield << std::endl; 
         }
      /*    else
@@ -312,6 +328,15 @@ void myMatch::ChargeHypothesis(const double xoffset)
             //std::cout << "Not sce   " << Efield << "  " << drift_speed << std::endl; 
         } */
         
+        if (cluster_fit[pt_index].pitch <= 0.0 || cluster_fit[pt_index].q <= 0.0)
+        {
+            cluster_fit[pt_index].pitch = 0.0;
+            cluster_fit[pt_index].q = 0.0;
+            cluster_fit[pt_index].e = 0.0;
+            ratio_sce[pt_index] = 1.0;
+            continue;
+        }
+
         //ESTIMAR A ENERGIA
         drift_time = (drift_length - std::abs(cluster_fit[pt_index].x)) / drift_speed;
         if (drift_time < 0.0) drift_time = 0.0; // fora de geometria / proteção
@@ -371,7 +396,7 @@ void myMatch::ChargeHypothesis(const double xoffset)
         for(int ch=chi;ch<=chf;++ch)
         {   
             double vis = direct_visibilities[ch];
-            double n1 = q*vis*effVector[ch]*(1+this->XtalkVector[ch])*this->CHActiveVector[ch];
+            double n1 = q*vis*vis_map_factor*effVector[ch]*(1+this->XtalkVector[ch])*this->CHActiveVector[ch];
             this->flash_fit.PE_CH[ch]+=n1;
         }     
     }
@@ -729,7 +754,7 @@ double myMatch::returnVisEff(const QCluster* qs, const double xoffset)
 
         for (int ch = 0; ch < CH_MAX; ++ch)
         {
-            total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+            total += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch] ;
         }
     }
 
@@ -770,7 +795,7 @@ double myMatch::returnVisEff(const QCluster* qs, const QFlash* qf, const double 
         {
             if(qf->PE_CH[ch]>0)
             {
-                total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                total += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
             }
         }
     }
@@ -802,11 +827,11 @@ double myMatch::returnVisEff()
             if(flash_actual.PE_CH[ch]>0)
             {
                 if(!useSCE)
-                    total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                    total += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
                 else
                 {
                     double ratio = ratio_sce[pt_index];
-                    total += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch]* ratio;
+                    total += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch]* ratio;
                 }
             }
         }
@@ -814,6 +839,39 @@ double myMatch::returnVisEff()
 
     return total / L;
 }
+
+double myMatch::returnVisEffLight()
+{
+    double total = 0.0;
+    double LightTotal = 0.0;
+    
+    for (size_t pt_index = 0; pt_index < cluster_fit.size(); ++pt_index)
+    {
+        const auto& pt = (cluster_fit)[pt_index];
+
+        double x = pt.x;
+        if(abs(x)>=(drift_length+10)) continue;
+        double y = pt.y;
+        double z = pt.z;
+        double l = (pt.q >= 0.0) ? pt.q : 0.0;
+
+        LightTotal+=l;
+
+        geo::Point_t point{x, y, z};
+        fSAM->detectedDirectVisibilities(direct_visibilities, point);
+
+        for (int ch = 0; ch < CH_MAX; ++ch)
+        {
+            if(flash_actual.PE_CH[ch]>0)
+            {
+                total += direct_visibilities[ch] * vis_map_factor * l * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+            }
+        }
+    }
+
+    return total / LightTotal;
+}
+
 
 std::vector<double> myMatch::returnVisEffCh(const QCluster* qs, const QFlash* qf, const double xoffset)
 {
@@ -849,7 +907,7 @@ std::vector<double> myMatch::returnVisEffCh(const QCluster* qs, const QFlash* qf
         {
             if(qf->PE_CH[ch]>0)
             {
-                vis_ch[ch] += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                vis_ch[ch] += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
             }
           
         }
@@ -894,7 +952,7 @@ std::vector<double> myMatch::returnVisEffCh()
         {
             if(flash_actual.PE_CH[ch]>0)
             {
-                vis_ch[ch] += direct_visibilities[ch] * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
+                vis_ch[ch] += direct_visibilities[ch] * vis_map_factor * pitch * this->effVector[ch] * (1+this->XtalkVector[ch]) * this->CHActiveVector[ch];
             }   
         }
     }

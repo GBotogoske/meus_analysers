@@ -24,6 +24,8 @@
 #include "lardataobj/RecoBase/Hit.h"
 #include "lardataobj/RecoBase/PFParticle.h"
 
+#include "lardataobj/Simulation/SimEnergyDeposit.h"
+
 #include "larcore/Geometry/Geometry.h"
 #include "larcore/Geometry/WireReadout.h"
 
@@ -37,6 +39,7 @@
 #include "larsim/MCCheater/BackTrackerService.h"
 
 #include "duneopdet/OpticalDetector/OpFlashSort.h"
+
 
 #include "TTree.h"
 
@@ -165,6 +168,7 @@ class MyFlashMatchingMC : public art::EDAnalyzer
         art::InputTag fShowerLabel;//
         art::InputTag fSliceLabel;
         art::InputTag fPFPLabel;
+        art::InputTag fSimEnergyDepositLabel;
 
         double fMinJaccard;   // corte pra salvar par
         int    fMaxStore;     // truncar vetores no TTree
@@ -209,11 +213,15 @@ class MyFlashMatchingMC : public art::EDAnalyzer
         float fJaccard=0.f;
         int   fDomEqual=0;
         int fDomPDG=0;
+        double fEnergy;
 
         std::vector<int> fCommonTIDs; // só IDs (pra debug)
         std::vector<int> fCommonPDGs;
 
         // helpers
+
+        std::unordered_map<int,double> BuildTotalDepositedEnergyMap(art::Event const& e,
+                                                    cheat::ParticleInventoryService const& pis) const;
         std::unordered_map<int,double> BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
                                                     cheat::PhotonBackTrackerService& pbts,
                                                     cheat::ParticleInventoryService const& pis) const;
@@ -230,6 +238,7 @@ class MyFlashMatchingMC : public art::EDAnalyzer
         double trackLength = 0.0;
         std::string DetectorZone;
         std::string ClusterType; //Slice,Track
+        
 
         int nTtotal = 0;
         int nFTotal = 0 ;
@@ -242,7 +251,7 @@ MyFlashMatchingMC::MyFlashMatchingMC(fhicl::ParameterSet const& p)
     fSliceLabel = p.get<art::InputTag>("SliceLabel");  
     fTrackLabel = p.get<art::InputTag>("TrackLabel");
     fShowerLabel = p.get<art::InputTag>("ShowerLabel");
-
+    fSimEnergyDepositLabel = p.get<art::InputTag>("SimEnergyDepositLabel");
     fPFPLabel = p.get<art::InputTag>("PFParticleLabel");
 
     fMinJaccard = p.get<double>("MinJaccard", 0.0);
@@ -292,6 +301,7 @@ void MyFlashMatchingMC::beginJob()
     fTreeT->Branch("tids", &fTrackTIDs);
     fTreeT->Branch("pdgs", &fTrackPDGs);
     fTreeT->Branch("w", &fTrackW);
+    fTreeT->Branch("EnergyDeposited", &fEnergy);
 
     fTreeFT = tfs->make<TTree>("treeFT", "Flash-Track candidates (weighted truth overlap)");
     fTreeFT->Branch("run", &fRun);
@@ -306,7 +316,34 @@ void MyFlashMatchingMC::beginJob()
     fTreeFT->Branch("domPDG", &fDomPDG);
     fTreeFT->Branch("commonTIDs", &fCommonTIDs);
     fTreeFT->Branch("commonPDGs",  &fCommonPDGs);
-    
+    fTreeFT->Branch("EnergyDeposited", &fEnergy);   
+}
+
+std::unordered_map<int,double> MyFlashMatchingMC::BuildTotalDepositedEnergyMap( art::Event const& e, cheat::ParticleInventoryService const& pis) const
+{
+    std::unordered_map<int,double> eDepMap;
+
+    auto sed_h = e.getHandle<std::vector<sim::SimEnergyDeposit>>(fSimEnergyDepositLabel);
+
+    if (!sed_h)
+    {
+        mf::LogWarning("MyFlashMatchingMC")
+            << "Cannot load SimEnergyDeposit: " << fSimEnergyDepositLabel;
+        return eDepMap;
+    }
+
+    for (auto const& sed : *sed_h)
+    {
+        int tid0 = sed.TrackID();
+        if (tid0 == 0) continue;
+
+        // Mesmo agrupamento que voce usa nos hits
+        int tid = std::abs(pis.TrackIdToEveTrackId(std::abs(tid0)));
+        if (tid == 0) continue;
+
+        eDepMap[tid] += sed.Energy();
+    }
+    return eDepMap;
 }
 
 std::unordered_map<int,double> MyFlashMatchingMC::BuildFlashMap(std::vector<art::Ptr<recob::OpHit>> const& ophits,
@@ -410,6 +447,8 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
     auto const& bts  = *art::ServiceHandle<cheat::BackTrackerService const>(); //responsavel por buscar trajetorias MC com base nos hits
     auto const& pis  = *art::ServiceHandle<cheat::ParticleInventoryService const>(); //responsavel por obter informacoes da particula MC 
 
+    auto totalEDepMap = BuildTotalDepositedEnergyMap(e, pis);
+
     // ---- flashes ----
     auto flash_h = e.getHandle<std::vector<recob::OpFlash>>(fFlashLabel);
     if (!flash_h) 
@@ -502,7 +541,8 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
 
 
     // 1 secao setandos os parametros e produtos
-    int nT,nS=0;
+    int nT = 0;
+    int nS = 0;
     if (ClusterType == "Track") // se estamos no tipo track
     {
         track_h = e.getHandle<std::vector<recob::Track>>(fTrackLabel);
@@ -613,6 +653,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
     int nTotal = nT + nS;
     std::vector<std::unordered_map<int,double>> trackMaps(nTotal); // um vetor ( ... para cada entidade(track/shower/slice) ... ) de mapas.
                                                             //cada mapa associa um trackID(track aqui eh na sim MC G4) um valor de contribuicao para esse cluster
+    std::vector<double> trackEnergies(nTotal, 0.0);
 
     for (int t = 0; t < (nTotal); ++t) // varre os cluster
     {
@@ -741,7 +782,27 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
         auto const* p = pis.TrackIdToParticle_P(fTrackDomTID);
         fTrackDomPDG = p ? p->PdgCode() : 0;
 
-        MapToVectors(wT, pis, fTrackTIDs, fTrackPDGs, fTrackW, fMaxStore); // preenche os vetores para salvar na tree
+        MapToVectors(wT, pis, fTrackTIDs, fTrackPDGs, fTrackW, fMaxStore);
+        fEnergy = 0.0;
+
+        if (ClusterType == "Slice")
+        {
+            // Para slice: soma a energia total dos TIDs presentes na slice
+            for (auto const& [tid, weight] : wT)
+            {
+                auto itE = totalEDepMap.find(tid);
+                if (itE != totalEDepMap.end())
+                    fEnergy += weight * itE->second;
+            }
+        }
+        else
+        {
+            // Para track/shower: normalmente faz mais sentido usar o TID dominante
+            auto itE = totalEDepMap.find(fTrackDomTID);
+            if (itE != totalEDepMap.end())
+                fEnergy = itE->second;
+        }
+        trackEnergies[t] = fEnergy;
         fTreeT->Fill();
     }
 
@@ -834,6 +895,7 @@ void MyFlashMatchingMC::analyze(art::Event const& e)
                 }
             }
 
+            fEnergy = trackEnergies[t];
             fTreeFT->Fill();
         }
     }

@@ -114,7 +114,7 @@ class MyFlashMatchingGetClusters : public art::EDAnalyzer
         int ftrackID,fflashID,ftrackType;
 
         int nOPdet;
-        double fvis;
+        double fvis,fvislight;
 
         double drift_length;
         double drift_speed;
@@ -124,6 +124,7 @@ class MyFlashMatchingGetClusters : public art::EDAnalyzer
         double Efield;
 
         double gain_factor=1.0;
+        double vis_map_factor=1.0;
 
         void returnQCluster(QCluster& this_qlight, art::Ptr<recob::Track> const& trk, art::FindManyP<anab::Calorimetry> const& trk_to_calo, int const& thisId, int const& typeObj );
         //void returnQClusterShower(QCluster& this_qlight, art::Ptr<recob::Shower> const& shw, art::FindManyP<recob::Hit> const& shw_to_hit, art::FindManyP<recob::SpacePoint> const& hit_to_sp, int const& thisId, int const& typeObj );
@@ -133,6 +134,9 @@ class MyFlashMatchingGetClusters : public art::EDAnalyzer
         std::vector<QCluster> getQClustersPFPs(art::Event const& e); // esse aqui eh por slice
         std::vector<QCluster> getQClustersTracks(art::Event const& e); // esse aqui eh por track
         std::vector<QFlash> getFlashs(art::Event const& e);
+
+        bool getTrackDirFromCaloPoint(art::Ptr<recob::Track> const& trk,double x,double y,double z,float& dirx,float& diry,float& dirz);
+
 
         phot::PhotonVisibilityService const* fPVS;
         phot::SemiAnalyticalModel const* fSAM;
@@ -201,6 +205,10 @@ MyFlashMatchingGetClusters::MyFlashMatchingGetClusters(fhicl::ParameterSet const
     trackLength = p.get<double>("trackLengthMin",0.0);
 
     gain_factor = p.get<double>("gain_factor",1.0);
+    vis_map_factor = p.get<double>("vis_map_factor",1.0);
+
+    std::cout << "gain_factor: " << gain_factor << std::endl;
+    std::cout << "vis_map_factor: " << vis_map_factor << std::endl;
 
     std::cout << "Track Length min: " << trackLength << std::endl;
     std::cout << "limitMinFlash: " << limitMinFlash << std::endl;
@@ -300,6 +308,7 @@ void MyFlashMatchingGetClusters::beginJob()
     fTreeFT->Branch("trackID", &ftrackID);
     fTreeFT->Branch("trackType", &ftrackType);
     fTreeFT->Branch("vis", &fvis);
+    fTreeFT->Branch("vis_light", &fvislight);
     fTreeFT->Branch("flash", &fFlash_fit);
     fTreeFT->Branch("cluster", &fCluster_fit);
     fTreeFT->Branch("LYCH", &LYCH);
@@ -364,6 +373,7 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
     auto& qqs = QClusters;
     auto& qfs = QFlashs;
     myMatch* match_operator = new myMatch(drift_length,drift_speed,electronlife,density,Efield,fPVS,fSAM,fPDEVector,fXTalkVector,fCHActiveVector,useSCE,sce);
+    match_operator->vis_map_factor = vis_map_factor;
     for (int nf = 0; nf < Nf; ++nf) 
     {
         match_operator->flash_actual = qfs[nf]; 
@@ -384,6 +394,7 @@ void MyFlashMatchingGetClusters::analyze(art::Event const& e)
                 fCluster_fit.Energy = fCluster_fit.TotalEnergy();
                 fFlash_fit.Light = fFlash_fit.TotalLight();
                 fvis = match_operator->returnVisEff();
+                fvislight = match_operator->returnVisEffLight();
                 LYCH =  match_operator->returnVisEffCh();
                 dch = match_operator->returndCh(xch,ych,zch);
                 fTreeFT->Fill();
@@ -471,28 +482,65 @@ void MyFlashMatchingGetClusters::returnQCluster(QCluster& this_qlight, art::Ptr<
 
     //std::cout << "calos : " << plane << " - " << calo->PlaneID().Plane << std::endl;
     //varre todas as posicoes/energia depositadas
+    
     for (size_t s = 0; s < dEdx_v.size(); s++)
     {
         float x = pos_v[s].X();
         float y = pos_v[s].Y();
         float z = pos_v[s].Z();
 
-        float dirx = -1;
-        float diry = -1;
-        float dirz = -1;
+        bool has_dir = false;
+        float dirx = -10;
+        float diry = -10;
+        float dirz = -10;
+        // 1) tenta o índice oficial da calorimetria
         if (s < indexpoints.size())
         {
             int indp = indexpoints[s];
-            if(indp>=0)
+
+            if (indp >= 0 && trk->HasValidPoint(indp))
             {
-                if(trk->HasValidPoint(indp))
+                auto const& dir_v = trk->DirectionAtPoint(indp);
+
+                double norm = std::sqrt(
+                    dir_v.X()*dir_v.X() +
+                    dir_v.Y()*dir_v.Y() +
+                    dir_v.Z()*dir_v.Z()
+                );
+
+                if (norm > 0.0)
                 {
-                    auto const& dir_v = trk->DirectionAtPoint(indp);
-                    dirx = dir_v.X();
-                    diry = dir_v.Y();
-                    dirz = dir_v.Z();
+                    dirx = dir_v.X() / norm;
+                    diry = dir_v.Y() / norm;
+                    dirz = dir_v.Z() / norm;
+                    has_dir = true;
                 }
             }
+        }
+
+        // 2) fallback: usa o ponto do calo e outro ponto válido da track
+        if (!has_dir)
+        {
+            has_dir = getTrackDirFromCaloPoint(trk, x, y, z, dirx, diry, dirz);
+        }
+
+        if (!has_dir) //ultimo fallback
+        {
+        auto const& sd = trk->StartDirection();
+
+        double norm = std::sqrt(
+            sd.X()*sd.X() +
+            sd.Y()*sd.Y() +
+            sd.Z()*sd.Z()
+        );
+
+        if (norm > 1.0e-12)
+        {
+            dirx = sd.X() / norm;
+            diry = sd.Y() / norm;
+            dirz = sd.Z() / norm;
+            has_dir = true;
+        }
         }
 
         if(DetectorZone == "Positive" && x<0) //o pegar as posicoes com x positivo
@@ -731,6 +779,8 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
         std::unordered_set<int> visited;
 
         std::function<void(const art::Ptr<recob::PFParticle>&)> visitPFP;
+        int Nt=0;
+        int Ns=0;
         visitPFP = [&](const art::Ptr<recob::PFParticle>& pfp)
         {
             if (pfp.isNull()) return;
@@ -751,11 +801,13 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
 
                 size_t nBefore = this_qlight.size();
                 returnQCluster(this_qlight, trk, trk_to_calo, sl->ID(), 3);
-
+                
                 if (this_qlight.size() > nBefore)
                 {
                     totalLength += trk->Length();
+                    Nt +=1;
                 }
+                
             }
 
             // Showers deste PFP
@@ -775,7 +827,9 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
                     if (this_qlight.size() > nBefore)
                     {
                         totalLength += shw->Length();
+                        Ns +=1;
                     }
+                   
                 }
             }
 
@@ -802,6 +856,8 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersSlices(art::Event 
             this_qlight.type   = 3;     // Slice
             this_qlight.APA    = -1;    // slice pode misturar APAs
             this_qlight.Length = totalLength;
+            this_qlight.Nt = Nt;
+            this_qlight.Ns = Ns;
 
             if (totalLength >= trackLength)
             {
@@ -920,6 +976,8 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event 
             returnQCluster(this_qlight,trk,trk_to_calo,trk->ID(),0);
             this_qlight.Length = trk->Length();
             this_qlight.Charge = this_qlight.TotalCharge();
+            this_qlight.Nt = 1;
+            this_qlight.Ns = 0;
         }
         
         if(this_qlight.size()>0)
@@ -984,6 +1042,8 @@ std::vector<QCluster> MyFlashMatchingGetClusters::getQClustersTracks(art::Event 
                 returnQClusterShower(this_qlight,shw,shw_to_calo,shw->ID(),1); 
                 this_qlight.Length = shw->Length();
                 this_qlight.Charge = this_qlight.TotalCharge();
+                this_qlight.Nt = 0;
+                this_qlight.Ns = 1;
             }
             
             if(this_qlight.size()>0)
@@ -1110,6 +1170,202 @@ std::vector<QFlash> MyFlashMatchingGetClusters::getFlashs(art::Event const& e)
     }
     
     return QFlashs;
+}
+
+
+bool MyFlashMatchingGetClusters::getTrackDirFromCaloPoint(
+    art::Ptr<recob::Track> const& trk,
+    double x, double y, double z,
+    float& dirx, float& diry, float& dirz)
+{
+    const size_t npts = trk->NumberTrajectoryPoints();
+    if (npts == 0) return false;
+
+    // ------------------------------------------------------------
+    // 1) acha o ponto da track mais próximo geometricamente
+    // ------------------------------------------------------------
+    double best_dist2 = std::numeric_limits<double>::max();
+    int best_idx = -1;
+
+    for (size_t ip = 0; ip < npts; ++ip)
+    {
+        if (!trk->HasValidPoint(ip)) continue;
+
+        auto const& p = trk->LocationAtPoint(ip);
+
+        double dx = p.X() - x;
+        double dy = p.Y() - y;
+        double dz = p.Z() - z;
+
+        double dist2 = dx*dx + dy*dy + dz*dz;
+
+        if (dist2 < best_dist2)
+        {
+            best_dist2 = dist2;
+            best_idx = static_cast<int>(ip);
+        }
+    }
+
+    if (best_idx < 0) return false;
+
+    // ------------------------------------------------------------
+    // 2) primeira tentativa: usa a direção da própria track
+    // no ponto geometricamente mais próximo
+    // ------------------------------------------------------------
+    {
+        auto const& d = trk->DirectionAtPoint(static_cast<size_t>(best_idx));
+
+        double norm = std::sqrt(
+            d.X()*d.X() +
+            d.Y()*d.Y() +
+            d.Z()*d.Z()
+        );
+
+        if (norm > 1.0e-12)
+        {
+            dirx = d.X() / norm;
+            diry = d.Y() / norm;
+            dirz = d.Z() / norm;
+            return true;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 3) fallback: PCA local com os pontos geometricamente
+    // mais próximos do ponto de calo.
+    //
+    // Isso NÃO assume que vizinhos no vetor são vizinhos geométricos.
+    // ------------------------------------------------------------
+    struct NearPoint
+    {
+        double dist2;
+        double x;
+        double y;
+        double z;
+    };
+
+    std::vector<NearPoint> pts;
+    pts.reserve(npts);
+
+    for (size_t ip = 0; ip < npts; ++ip)
+    {
+        if (!trk->HasValidPoint(ip)) continue;
+
+        auto const& p = trk->LocationAtPoint(ip);
+
+        double dx = p.X() - x;
+        double dy = p.Y() - y;
+        double dz = p.Z() - z;
+
+        double dist2 = dx*dx + dy*dy + dz*dz;
+
+        pts.push_back({dist2, p.X(), p.Y(), p.Z()});
+    }
+
+    if (pts.size() < 2) return false;
+
+    std::sort(
+        pts.begin(),
+        pts.end(),
+        [](NearPoint const& a, NearPoint const& b)
+        {
+            return a.dist2 < b.dist2;
+        }
+    );
+
+    // Usa no máximo os N pontos geometricamente mais próximos
+    const size_t NLOCAL = std::min<size_t>(pts.size(), 8);
+
+    double mx = 0.0;
+    double my = 0.0;
+    double mz = 0.0;
+
+    for (size_t i = 0; i < NLOCAL; ++i)
+    {
+        mx += pts[i].x;
+        my += pts[i].y;
+        mz += pts[i].z;
+    }
+
+    mx /= static_cast<double>(NLOCAL);
+    my /= static_cast<double>(NLOCAL);
+    mz /= static_cast<double>(NLOCAL);
+
+    double cxx = 0.0;
+    double cxy = 0.0;
+    double cxz = 0.0;
+    double cyy = 0.0;
+    double cyz = 0.0;
+    double czz = 0.0;
+
+    for (size_t i = 0; i < NLOCAL; ++i)
+    {
+        double dx = pts[i].x - mx;
+        double dy = pts[i].y - my;
+        double dz = pts[i].z - mz;
+
+        cxx += dx*dx;
+        cxy += dx*dy;
+        cxz += dx*dz;
+        cyy += dy*dy;
+        cyz += dy*dz;
+        czz += dz*dz;
+    }
+
+    // ------------------------------------------------------------
+    // Power iteration para pegar o maior autovetor da matriz
+    // de covariância. Esse vetor é a direção principal local.
+    // ------------------------------------------------------------
+    double vx = 1.0;
+    double vy = 1.0;
+    double vz = 1.0;
+
+    for (int it = 0; it < 20; ++it)
+    {
+        double nx = cxx*vx + cxy*vy + cxz*vz;
+        double ny = cxy*vx + cyy*vy + cyz*vz;
+        double nz = cxz*vx + cyz*vy + czz*vz;
+
+        double norm = std::sqrt(nx*nx + ny*ny + nz*nz);
+
+        if (norm <= 1.0e-12) return false;
+
+        vx = nx / norm;
+        vy = ny / norm;
+        vz = nz / norm;
+    }
+
+    // ------------------------------------------------------------
+    // 4) orienta o sinal usando StartDirection(), se possível.
+    // PCA dá eixo, não sentido; então o sinal precisa ser escolhido.
+    // ------------------------------------------------------------
+    {
+        auto const& sd = trk->StartDirection();
+
+        double sd_norm = std::sqrt(
+            sd.X()*sd.X() +
+            sd.Y()*sd.Y() +
+            sd.Z()*sd.Z()
+        );
+
+        if (sd_norm > 1.0e-12)
+        {
+            double dot = vx*sd.X() + vy*sd.Y() + vz*sd.Z();
+
+            if (dot < 0.0)
+            {
+                vx *= -1.0;
+                vy *= -1.0;
+                vz *= -1.0;
+            }
+        }
+    }
+
+    dirx = vx;
+    diry = vy;
+    dirz = vz;
+
+    return true;
 }
 
 
